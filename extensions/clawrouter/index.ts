@@ -14,6 +14,7 @@ import type {
 import { defineSingleProviderPluginEntry } from "openclaw/plugin-sdk/provider-entry";
 import { buildProviderReplayFamilyHooks } from "openclaw/plugin-sdk/provider-model-shared";
 import { buildProviderStreamFamilyHooks } from "openclaw/plugin-sdk/provider-stream-family";
+import { wrapProviderPayloadHook } from "openclaw/plugin-sdk/provider-stream-shared";
 import {
   buildProviderToolCompatFamilyHooks,
   findUnsupportedSchemaKeywords,
@@ -182,20 +183,32 @@ function wrapClawRouterProviderStream(ctx: ProviderWrapStreamFnContext): StreamF
     const stream = tiers
       ? (openAiServiceTier.wrapStreamFn?.({
           ...ctx,
+          streamFn: (requestModel, requestContext, requestOptions) =>
+            underlying(requestModel, requestContext, {
+              ...requestOptions,
+              onPayload: wrapProviderPayloadHook(
+                requestOptions?.onPayload,
+                (payload, replacement) => {
+                  // The caller owns explicit tiers, including async replacements.
+                  const body = readRecord(replacement ?? payload);
+                  if (body?.service_tier === "ultrafast" && !tiers.includes("ultrafast")) {
+                    throw new Error(
+                      "ClawRouter model " +
+                        model.id +
+                        " does not advertise ultrafast; supported tiers: " +
+                        tiers.join(", "),
+                    );
+                  }
+                  return replacement;
+                },
+              ),
+            }),
           extraParams: {
             ...ctx.extraParams,
             fastMode: () => {
               const fast = normalizeFastMode(
                 typeof preference === "function" ? preference() : preference,
               );
-              if (fast === "ultrafast" && !tiers.includes("ultrafast")) {
-                throw new Error(
-                  "ClawRouter model " +
-                    model.id +
-                    " does not advertise ultrafast; supported tiers: " +
-                    tiers.join(", "),
-                );
-              }
               return fast === true && !tiers.includes("priority") ? undefined : fast;
             },
           },

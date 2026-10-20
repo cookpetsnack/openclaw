@@ -422,7 +422,9 @@ describe("ClawRouter agent service-tier HTTP composition", () => {
 
   it("rejects explicit Ultrafast when the model catalog does not declare it", async () => {
     const before = requests.length;
-    await expect(call({ override: { fastMode: "ultrafast" } })).rejects.toThrow(
+    const result = await call({ override: { fastMode: "ultrafast" } });
+    expect(result.stopReason).toBe("error");
+    expect(result.errorMessage).toContain(
       "does not advertise ultrafast; supported tiers: default, flex, priority",
     );
     expect(requests).toHaveLength(before);
@@ -442,20 +444,23 @@ describe("ClawRouter agent service-tier HTTP composition", () => {
     }
   });
 
-  it("keeps an explicit async payload tier ahead of Fast", async () => {
-    const result = await call(
-      { override: { fastMode: true } },
-      {
-        onPayload: async (payload, model) => {
-          expect(model.provider).toBe("clawrouter");
-          expect(model.id).toBe("openai/tier-fixture");
-          return { ...(payload as Record<string, unknown>), service_tier: "flex" };
+  it.each([true, "ultrafast"] as const)(
+    "keeps an explicit async payload tier ahead of Fast %s",
+    async (fastMode) => {
+      const result = await call(
+        { override: { fastMode } },
+        {
+          onPayload: async (payload, model) => {
+            expect(model.provider).toBe("clawrouter");
+            expect(model.id).toBe("openai/tier-fixture");
+            return { ...(payload as Record<string, unknown>), service_tier: "flex" };
+          },
         },
-      },
-    );
-    expect(result.stopReason).toBe("stop");
-    expect(requests.at(-1)?.body.service_tier).toBe("flex");
-  });
+      );
+      expect(result.stopReason).toBe("stop");
+      expect(requests.at(-1)?.body.service_tier).toBe("flex");
+    },
+  );
 
   it("expires Auto between requests without resampling during an async payload replacement", async () => {
     let nowMs = 1000;
