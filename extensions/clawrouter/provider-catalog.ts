@@ -14,6 +14,7 @@ import {
   normalizeOptionalString,
   normalizeTrimmedStringList,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
+import { CLAWROUTER_ROUTE_METADATA_KEY as ROUTE_METADATA_KEY } from "./provider-policy-api.js";
 
 const CLAWROUTER_DEFAULT_BASE_URL = "https://clawrouter.openclaw.ai";
 
@@ -21,7 +22,6 @@ const PROVIDER_ID = "clawrouter";
 // Inventory changes infrequently; inference still enforces current grants and budgets.
 // Explicit catalog refresh bypasses this response cache at the acquisition owner.
 const CATALOG_CACHE_TTL_MS = 60 * 60_000;
-const ROUTE_METADATA_KEY = "clawrouterRoute";
 const DEFAULT_CONTEXT_WINDOW = 200_000;
 const DEFAULT_MAX_TOKENS = 32_768;
 const DEFAULT_COST = {
@@ -56,6 +56,7 @@ type CatalogPricing = {
   cacheWrite1hInputMicrosPerMillion?: number;
   maxInputTokens?: number;
   defaultMaxOutputTokens?: number;
+  serviceTiers?: string[];
 };
 
 type CatalogModel = {
@@ -80,6 +81,7 @@ type RouteMetadata = {
   api: NonNullable<ModelDefinitionConfig["api"]>;
   baseUrl: string;
   upstreamModel?: string;
+  serviceTiers?: string[];
 };
 
 export function normalizeClawRouterReasoningEfforts(
@@ -140,6 +142,9 @@ function parseCatalogPricing(value: unknown): CatalogPricing | undefined {
     ),
     maxInputTokens: asPositiveSafeInteger(row.maxInputTokens),
     defaultMaxOutputTokens: asPositiveSafeInteger(row.defaultMaxOutputTokens),
+    serviceTiers: Array.isArray(row.serviceTiers)
+      ? normalizeTrimmedStringList(row.serviceTiers.map((tier) => asOptionalRecord(tier)?.id))
+      : undefined,
   };
 }
 
@@ -318,6 +323,12 @@ function buildRoutedModel(
         api,
         baseUrl,
         ...(upstreamModel ? { upstreamModel } : {}),
+        // Only this catalog provider/transport owns OpenAI scheduling tiers.
+        ...(provider.id === "openai" &&
+        api === "openai-responses" &&
+        model.pricing?.serviceTiers?.length
+          ? { serviceTiers: model.pricing.serviceTiers }
+          : {}),
       } satisfies RouteMetadata,
     },
   };

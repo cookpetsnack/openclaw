@@ -13,6 +13,7 @@ import type {
 } from "openclaw/plugin-sdk/plugin-entry";
 import { defineSingleProviderPluginEntry } from "openclaw/plugin-sdk/provider-entry";
 import { buildProviderReplayFamilyHooks } from "openclaw/plugin-sdk/provider-model-shared";
+import { buildProviderStreamFamilyHooks } from "openclaw/plugin-sdk/provider-stream-family";
 import {
   buildProviderToolCompatFamilyHooks,
   findUnsupportedSchemaKeywords,
@@ -24,7 +25,10 @@ import {
   fetchWithSsrFGuard,
   ssrfPolicyFromHttpBaseUrlAllowedHostname,
 } from "openclaw/plugin-sdk/ssrf-runtime";
-import { asOptionalRecord as readRecord } from "openclaw/plugin-sdk/string-coerce-runtime";
+import {
+  asOptionalRecord as readRecord,
+  normalizeFastMode,
+} from "openclaw/plugin-sdk/string-coerce-runtime";
 import { containsAsciiControlCharacter } from "openclaw/plugin-sdk/string-normalization-runtime";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
 import { parseClawRouterPool, type ClawRouterPoolResult } from "./pool.js";
@@ -37,6 +41,11 @@ import {
   normalizeClawRouterResolvedModel,
   prepareClawRouterRequestModel,
 } from "./provider-catalog.js";
+import {
+  resolveClawRouterServiceTiers,
+  resolveFastModeSupport,
+  resolveServiceTiers,
+} from "./provider-policy-api.js";
 import { fetchClawRouterUsage } from "./usage.js";
 
 const PERPLEXITY_UNSUPPORTED_SCHEMA_KEYWORDS = new Set([
@@ -133,6 +142,8 @@ function setHeaderDefault(
   }
 }
 
+const openAiServiceTier = buildProviderStreamFamilyHooks("openai-responses-service-tier");
+
 function wrapClawRouterProviderStream(ctx: ProviderWrapStreamFnContext): StreamFn | undefined {
   const underlying = ctx.streamFn;
   if (!underlying) {
@@ -165,7 +176,32 @@ function wrapClawRouterProviderStream(ctx: ProviderWrapStreamFnContext): StreamF
     if (dispatchKey) {
       headers.Authorization = `Bearer ${dispatchKey}`;
     }
-    return underlying({ ...preparedModel, headers }, context, options);
+    const tiers = resolveClawRouterServiceTiers(model);
+    const preference = ctx.extraParams?.fastMode ?? ctx.extraParams?.fast_mode;
+    // Reuse the native tier/Auto precedence only for catalog-qualified routes.
+    const stream = tiers
+      ? (openAiServiceTier.wrapStreamFn?.({
+          ...ctx,
+          extraParams: {
+            ...ctx.extraParams,
+            fastMode: () => {
+              const fast = normalizeFastMode(
+                typeof preference === "function" ? preference() : preference,
+              );
+              if (fast === "ultrafast" && !tiers.includes("ultrafast")) {
+                throw new Error(
+                  "ClawRouter model " +
+                    model.id +
+                    " does not advertise ultrafast; supported tiers: " +
+                    tiers.join(", "),
+                );
+              }
+              return fast === true && !tiers.includes("priority") ? undefined : fast;
+            },
+          },
+        }) ?? underlying)
+      : underlying;
+    return stream({ ...preparedModel, headers }, context, options);
   };
 }
 
@@ -535,6 +571,8 @@ export default defineSingleProviderPluginEntry({
         return baseUrl !== providerConfig.baseUrl ? { ...providerConfig, baseUrl } : undefined;
       },
       normalizeResolvedModel: ({ model }) => normalizeClawRouterResolvedModel(model),
+      resolveFastModeSupport,
+      resolveServiceTiers,
       wrapSimpleCompletionStreamFn: wrapClawRouterProviderStream,
       wrapStreamFn: wrapClawRouterProviderStream,
       buildReplayPolicy: (ctx) => {
