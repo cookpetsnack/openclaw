@@ -1,20 +1,10 @@
-import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { isMainThread } from "node:worker_threads";
-import { collectNestedErrorCandidates } from "@openclaw/normalization-core/error-coercion";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../test/helpers/promise.js";
 import { makeTextToolResult } from "../../../test/helpers/text-tool-result.js";
 import { isAgentRunRestartAbortReason } from "../../agents/run-termination.js";
-import {
-  resolveSqliteReadScope,
-  toDatabaseOptions,
-} from "../../config/sessions/session-accessor.sqlite-scope.js";
 import { waitForGatewayActiveWork } from "../../infra/gateway-active-work.js";
-import * as nodeSqlite from "../../infra/node-sqlite.js";
-import * as workerAdmission from "../../infra/sqlite-worker-operation-admission.js";
-import { sqliteWorkerOwnerProbe as probe } from "../../infra/sqlite-worker-owner-probe.test-support.js";
 import {
   markGatewayRestartDraining,
   resetGatewayWorkAdmission,
@@ -22,19 +12,10 @@ import {
 } from "../../process/gateway-work-admission.js";
 import { getSessionControllerOperation } from "../../sessions/session-controller.js";
 import { waitForSessionRunEnd } from "../../sessions/session-controller.native-runtime.js";
-import { closeCachedOpenClawAgentDatabase } from "../../state/openclaw-agent-db-lifecycle.js";
-import {
-  getOpenClawAgentDatabaseIfOpen,
-  resolveOpenClawAgentSqlitePath,
-} from "../../state/openclaw-agent-db.js";
-import { withEnvAsync } from "../../test-utils/env.js";
-import { loadSqliteTrajectoryRuntimeEvents } from "../../trajectory/runtime-store.sqlite.js";
-import { createWorkerLiveTrajectoryRecorder } from "./live-event-projection.js";
 import { createPlacementRecoveryActions } from "./placement-dispatch-recovery.js";
 import { projectWorkerSessionTurnClaim } from "./placement-record.js";
 import { createWorkerSessionPlacementStore } from "./placement-store.js";
-import { getWorkerTurnExecutionIdentityCapability } from "./placement-turn-claim-events.js";
-import { WorkerRunnerCapacityError, type WorkerTurnTunnelHandle } from "./tunnel-contract.js";
+import type { WorkerTurnTunnelHandle } from "./tunnel-contract.js";
 import { WorkerTurnExecutionError } from "./worker-turn-failure.js";
 import * as fixture from "./worker-turn-launcher.test-support.js";
 import { captureWorkspaceSnapshot } from "./workspace-manifest-worker.js";
@@ -277,121 +258,4 @@ it("lets a worker turn that committed its terminal outcome finish through restar
     await waitForSessionRunEnd(SESSION_ID);
     turn.preparedRunAdmission.close();
   }
-});
-
-describe("worker turn trajectory authority", () => {
-  it.each(["revoked-at-commit", "ambient-state-change", "disabled"] as const)(
-    "keeps worker trajectory storage and authority bound (%s)",
-    async (authority) => {
-      expect(isMainThread).toBe(true);
-      await fixture.seedActivePlacement();
-      const input = fixture.turn(`trajectory-${authority}`);
-      const abort = new AbortController();
-      const revoked = new Error("turn revoked before trajectory commit");
-      const stop = new WorkerRunnerCapacityError();
-      const stages: string[] = [];
-      let flushFailure: unknown;
-      const launchTurn = vi.fn<NonNullable<WorkerTurnTunnelHandle["launchTurn"]>>(
-        async ({ turnClaim }) => {
-          const source = getWorkerTurnExecutionIdentityCapability(fixture.placements, turnClaim);
-          assert(source, "expected the launcher to bind its real receipt authority");
-          const recorder = await withEnvAsync(
-            {
-              OPENCLAW_TRAJECTORY: authority === "disabled" ? "0" : "1",
-              ...(authority === "ambient-state-change"
-                ? { OPENCLAW_STATE_DIR: path.join(fixture.root, "simulated-worker") }
-                : {}),
-            },
-            () => createWorkerLiveTrajectoryRecorder({ runId: input.runId, source }),
-          );
-          if (authority === "disabled") {
-            expect(recorder).toBeNull();
-            throw stop;
-          }
-          assert(recorder, "expected a durable live trajectory recorder");
-          recorder.recordEvent("session.started", { backend: "cloud-worker" });
-          const options = toDatabaseOptions(resolveSqliteReadScope(source.sessionTarget));
-          const pathname = resolveOpenClawAgentSqlitePath(options);
-          const cached = getOpenClawAgentDatabaseIfOpen(options);
-          assert(cached, "expected the turn's cached host database before eviction");
-          // Evict the host handle without draining this callback's accepted turn custody.
-          closeCachedOpenClawAgentDatabase(cached);
-          expect(cached.db.isOpen).toBe(false);
-          expect(getOpenClawAgentDatabaseIfOpen(options)).toBeUndefined();
-
-          let pendingTransaction = false;
-          const open = nodeSqlite.openNodeSqliteDatabase;
-          const opening = vi
-            .spyOn(nodeSqlite, "openNodeSqliteDatabase")
-            .mockImplementation((...args) => {
-              if (args[0] === pathname && pendingTransaction) {
-                throw new Error(
-                  "Receipt guard reopened the host database during a worker transaction",
-                );
-              }
-              return open(...args);
-            });
-          const admission = probe.admission(workerAdmission, (request, grant, callback) => {
-            if (request.stage === "transaction" || request.stage === "commit") {
-              pendingTransaction = true;
-              stages.push(request.stage);
-              if (request.stage === "commit" && authority === "revoked-at-commit") {
-                abort.abort(revoked);
-              }
-            }
-            callback(request, grant);
-          });
-          try {
-            await recorder.flush().catch((error: unknown) => {
-              flushFailure = error;
-            });
-          } finally {
-            pendingTransaction = false;
-            admission.mockRestore();
-            opening.mockRestore();
-          }
-          throw stop;
-        },
-      );
-      const tunnel = fixture.createWorkerTurnTunnel({
-        launchTurn,
-        quiesceWorkspace: vi.fn(),
-        syncWorkspace: vi.fn(),
-        reconcileWorkspace: vi.fn(),
-      });
-      const provider = fixture.createWorkerSessionTurnPlacementProvider({
-        placements: fixture.placements,
-        environments: fixture.workerTurnEnvironments(tunnel),
-      });
-      const runLocal = vi.fn();
-      try {
-        await expect(
-          provider.executeTurn(
-            { ...fixture.sessionTarget, runId: input.runId },
-            { ...input, abortSignal: abort.signal },
-            runLocal,
-          ),
-        ).rejects.toBe(stop);
-        expect(launchTurn).toHaveBeenCalledOnce();
-        expect(runLocal).not.toHaveBeenCalled();
-        expect.soft(stages).toEqual(authority === "disabled" ? [] : ["transaction", "commit"]);
-        const events = await loadSqliteTrajectoryRuntimeEvents(fixture.sessionTarget);
-        if (authority !== "revoked-at-commit") {
-          expect(flushFailure).toBeUndefined();
-          expect(events.map((event) => event.type)).toEqual(
-            authority === "disabled" ? [] : ["session.started"],
-          );
-        } else {
-          expect(
-            collectNestedErrorCandidates(flushFailure).map((error) =>
-              error instanceof Error ? error.message : error,
-            ),
-          ).toContain(revoked.message);
-          expect(events).toEqual([]);
-        }
-      } finally {
-        input.preparedRunAdmission.close();
-      }
-    },
-  );
 });

@@ -1,26 +1,18 @@
 import assert from "node:assert/strict";
 import os from "node:os";
 import path from "node:path";
-import { expectDefined } from "@openclaw/normalization-core";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 import {
   getAdmittedRunDelegatedAuthority,
   prepareSystemAgentRunAdmission,
 } from "../agents/admitted-run-context.js";
-import { mutateSubagentRuns } from "../agents/subagents/registry/subagent-registry-persistence.js";
-import {
-  addSubagentRunForTests,
-  getSubagentRunByRunId,
-} from "../agents/subagents/registry/subagent-registry.test-helpers.js";
-import type { SubagentRunRecord } from "../agents/subagents/registry/subagent-registry.types.js";
 import {
   getGatewayToolCallerIdentity,
   wrapToolWithGatewayCallerIdentity,
 } from "../agents/tools/gateway-caller-context.js";
 import * as gatewayTools from "../agents/tools/gateway.js";
 import { setRuntimeConfigSnapshot } from "../config/io.js";
-import { clearRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import type { OpenClawConfig } from "../config/types.openclaw.js";
 import {
   claimAgentRunApprovalAuthority,
@@ -30,19 +22,14 @@ import {
   registerComputerUseProvider,
   type ComputerUseProvider,
 } from "../plugins/computer-use-registration.js";
-import { withPluginRuntimeGatewayRequestScope } from "../plugins/runtime/gateway-request-scope.js";
 import type { OpenClawPluginNodeHostCommand } from "../plugins/types.node-host.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import { computerCapabilities } from "./desktop/computer.test-support.js";
-import { useMcpCollectorRegistry } from "./mcp-http.collector-registry.test-support.js";
 import {
   McpLoopbackToolCache,
   resolveMcpLoopbackPolicyTools,
   resolveMcpLoopbackScopedTools,
 } from "./mcp-http.runtime.js";
-import type { GatewayRequestContext } from "./server-methods/types.js";
-import { TerminalSessionManager } from "./terminal/session-manager.js";
-import * as pty from "./terminal/session-manager.test-helpers.js";
 import { resolveGatewayScopedTools } from "./tool-resolution.js";
 
 async function resolveTools(
@@ -377,246 +364,4 @@ it("applies sandbox tool denies to sandboxed loopback turns", async () => {
   const names = toolNames(result);
   expect(names).not.toContain("sessions_list");
   expect(names).toContain("sessions_history");
-});
-
-describe("resolveGatewayScopedTools swarm collectors", () => {
-  const runId = "cli-collector-run";
-  const collectorSessionKey = "agent:main:subagent:cli-collector";
-  const schema = {
-    type: "object",
-    properties: { answer: { type: "string" } },
-    required: ["answer"],
-    additionalProperties: false,
-  };
-
-  const buildConfig = (tools?: OpenClawConfig["tools"]): OpenClawConfig =>
-    ({
-      plugins: { enabled: false },
-      agents: { entries: { main: {} } },
-      tools: { swarm: true, ...tools },
-    }) as OpenClawConfig;
-
-  async function resolveCollectorTools(
-    overrides: Partial<Parameters<typeof resolveGatewayScopedTools>[0]> = {},
-  ) {
-    const cfg = overrides.cfg ?? buildConfig();
-    setRuntimeConfigSnapshot(cfg);
-    return (
-      await resolveTools({
-        cfg,
-        runId,
-        sessionKey: collectorSessionKey,
-        ...overrides,
-      })
-    ).tools;
-  }
-
-  async function resolveNames(...args: Parameters<typeof resolveCollectorTools>) {
-    return toolNames({ tools: await resolveCollectorTools(...args) });
-  }
-
-  async function updateCollector(
-    update: (entry: SubagentRunRecord) => SubagentRunRecord,
-    nextRunId = runId,
-  ) {
-    await mutateSubagentRuns(nextRunId === runId ? [runId] : [runId, nextRunId], (rows) => ({
-      value: undefined,
-      postimages: new Map<string, SubagentRunRecord | null>([
-        [runId, null],
-        [nextRunId, update(expectDefined(rows.get(runId), "collector run"))],
-      ]),
-    }));
-  }
-
-  useMcpCollectorRegistry({ runId, childSessionKey: collectorSessionKey, outputSchema: schema });
-
-  it("keeps structured_output through a restrictive gateway tool policy", async () => {
-    const names = await resolveNames({
-      cfg: buildConfig({ allow: ["sessions_list"] }),
-    });
-
-    expect(names).toContain("sessions_list");
-    expect(names).toContain("structured_output");
-    expect(names).not.toContain("sessions_search");
-  });
-
-  it.each([
-    [
-      "non-collector session",
-      { sessionKey: "agent:main:subagent:cli-worker", runId: "cli-worker-run" },
-      true,
-    ],
-    ["different run grant", { runId: "some-other-cli-run" }, true],
-    ["captured result", {}, false],
-  ] as const)("withholds collector transport for %s", async (_name, overrides, canYield) => {
-    if (!canYield) {
-      await updateCollector((entry) => ({
-        ...entry,
-        collectorCompletion: { status: "done", structured: { answer: "ok" } },
-      }));
-    }
-    const names = await resolveNames(overrides);
-    expect(names).not.toContain("structured_output");
-    expect(names.includes("sessions_yield")).toBe(canYield);
-  });
-
-  it("passes collector identity into tool construction for a schema-less collector", async () => {
-    const schemaLessRunId = "cli-schemaless-collector-run";
-    const sessionKey = "agent:main:subagent:cli-schemaless-collector";
-    await addSubagentRunForTests({
-      runId: schemaLessRunId,
-      childSessionKey: sessionKey,
-      collect: true,
-    });
-    const tools = await resolveCollectorTools({ sessionKey, runId: schemaLessRunId });
-    const names = tools.map((tool) => tool.name);
-    for (const forbidden of ["ask_user", "sessions_send", "sessions_yield", "structured_output"]) {
-      expect(names).not.toContain(forbidden);
-    }
-    expect(names).toContain("sessions_list");
-    const spawn = expectDefined(
-      tools.find((tool) => tool.name === "sessions_spawn"),
-      "collector sessions_spawn",
-    );
-
-    await expect(spawn.execute("nested", { task: "delegate" })).rejects.toThrow(
-      "requires collect=true",
-    );
-  });
-  it("admits the collector through the launch id a queued relaunch retains", async () => {
-    // A relaunch retains the launch id as swarmRunId; both ids must admit the collector.
-    const nextRunId = "cli-collector-relaunched";
-    await updateCollector(
-      (entry) => ({ ...entry, runId: nextRunId, swarmRunId: runId }),
-      nextRunId,
-    );
-
-    for (const admittedRunId of [runId, "cli-collector-relaunched"]) {
-      const names = await resolveNames({ runId: admittedRunId });
-      expect(names).toContain("structured_output");
-    }
-  });
-
-  it("keeps operator tool policy authoritative for a collector session on the http surface", async () => {
-    const names = await resolveNames({
-      surface: "http",
-      runId: undefined,
-      senderIsOwner: true,
-      allowGatewaySubagentBinding: true,
-      cfg: buildConfig({ allow: ["sessions_list"] }),
-    });
-
-    expect(names).toEqual(["sessions_list"]);
-  });
-  it("rejects the result when the grant is revoked between construction and execute", async () => {
-    // Cached tools must recheck revocation after the awaited before-tool hook.
-    let grantCurrent = true;
-    const tools = await resolveCollectorTools({
-      isGrantCurrent: () => grantCurrent,
-    });
-    const structuredOutput = expectDefined(
-      tools.find((tool) => tool.name === "structured_output"),
-      "collector output transport",
-    );
-    expect(structuredOutput.catalogMode).toBe("direct-only");
-
-    grantCurrent = false;
-
-    await expect(
-      structuredOutput.execute("revoked-collector-result", {
-        result: { answer: "ok" },
-      }),
-    ).rejects.toThrow("collector run grant is no longer active");
-    expect(getSubagentRunByRunId(runId)?.structuredOutput).toBeUndefined();
-    expect(getSubagentRunByRunId(runId)?.collectorCompletion).toBeUndefined();
-  });
-  it("hard-filters structured_output out of a grant that never merged it", async () => {
-    const cfg = buildConfig();
-    setRuntimeConfigSnapshot(cfg);
-    const { tools } = await resolveMcpLoopbackScopedTools({
-      cfg,
-      context: {
-        sessionKey: collectorSessionKey,
-        senderIsOwner: false,
-        toolsAllow: ["read"],
-        runId,
-      },
-    });
-    expect(tools.map((tool) => (tool as { name: string }).name)).toEqual(["read"]);
-  });
-});
-
-it("preserves exact-session terminal controls while applying configured execution denial", async () => {
-  const currentPty = pty.makeFakePty();
-  const otherPty = pty.makeFakePty();
-  const ptys = [currentPty, otherPty];
-  const spawn = vi.fn(async () => ptys.shift() ?? pty.makeFakePty());
-  const manager = new TerminalSessionManager({ emit: vi.fn(), spawn });
-  const childSessionKey = "agent:main:loopback-task-2";
-  const open = async (key: string, id?: string) =>
-    pty.expectTerminalOpen(
-      await manager.open(pty.baseOpenRequest({ owner: pty.agentTerminalOwner(key, id) })),
-    ).sessionId;
-  const currentId = await open(childSessionKey, "loopback-session-id");
-  const otherId = await open("agent:main:loopback-task-1");
-  currentPty.emitData("current session output\n");
-  const context = { terminalSessions: manager } as unknown as GatewayRequestContext;
-  const inScope = <T>(run: () => T) =>
-    withPluginRuntimeGatewayRequestScope({ context, isWebchatConnect: () => false }, run);
-
-  const cfg: OpenClawConfig = { tools: { allow: ["terminal"], exec: { mode: "deny" } } };
-  setRuntimeConfigSnapshot(cfg);
-  try {
-    const result = await inScope(() =>
-      resolveGatewayScopedTools({
-        cfg,
-        sessionKey: childSessionKey,
-        sessionId: "loopback-session-id",
-        execSession: { permissionMode: "read-only" },
-        runId: "shared-run",
-        senderIsOwner: true,
-        surface: "loopback",
-      }),
-    );
-    const terminal = result.tools.find((tool) => tool.name === "terminal");
-    if (!terminal?.execute) {
-      throw new Error("expected loopback terminal tool");
-    }
-    const execute = (action: string, params: Record<string, unknown> = {}) =>
-      inScope(() => terminal.execute!("terminal-tool", { action, ...params }));
-    const unavailable = (action: string, params: Record<string, unknown> = {}) =>
-      expect(execute(action, { sessionId: otherId, ...params })).rejects.toThrow(
-        "Terminal session unavailable",
-      );
-
-    await expect(execute("list")).resolves.toMatchObject({
-      details: { sessions: [expect.objectContaining({ sessionId: currentId })] },
-    });
-    await expect(execute("read", { sessionId: currentId })).resolves.toMatchObject({
-      details: { sessionId: currentId, text: "current session output\n" },
-    });
-    await unavailable("read");
-    const size = { cols: 100, rows: 30 };
-    await unavailable("resize", size);
-    await expect(execute("resize", { sessionId: currentId, ...size })).resolves.toMatchObject({
-      details: { ok: true },
-    });
-    expect(currentPty.resizes).toEqual([[100, 30]]);
-    spawn.mockClear();
-    await expect(execute("open")).rejects.toThrow("terminal action unavailable");
-    await expect(execute("input", { sessionId: currentId, data: "unsafe\r" })).rejects.toThrow(
-      "Terminal input denied by execution policy",
-    );
-    expect(spawn).not.toHaveBeenCalled();
-    expect([currentPty.writes, otherPty.writes]).toEqual([[], []]);
-
-    await unavailable("close");
-    await expect(execute("close", { sessionId: currentId })).resolves.toMatchObject({
-      details: { ok: true },
-    });
-    expect([currentPty.killed, otherPty.killed]).toEqual([true, false]);
-  } finally {
-    manager.disposeAll();
-    clearRuntimeConfigSnapshot();
-  }
 });

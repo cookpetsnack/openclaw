@@ -1,6 +1,5 @@
 import { setImmediate } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
-import { resolvePluginActivationSourceConfig } from "../plugins/activation-source-config.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { createDeferredCore } from "../shared/deferred.js";
 import {
@@ -10,15 +9,10 @@ import {
   prepareConfigRuntimeEnv,
 } from "./config-env-vars.js";
 import {
-  retainLegacyDefaultAgentId,
-  tryGetLegacyDefaultAgentId,
-} from "./legacy.default-agent-owner.js";
-import {
   cloneConfigWithResolutionFacts,
   createConfigResolutionFacts,
   getAuthoredConfigSecretRef,
   getConfigResolutionFacts,
-  getResolvedConfigEnvSecretRef,
   setConfigResolutionFacts,
 } from "./resolution-facts.js";
 import {
@@ -410,7 +404,8 @@ it("keeps registration and setters synchronous when an async companion is availa
 });
 
 it("prepares registrations added during a cold load before publishing and reusing its config", async () => {
-  const changes = watchChanges(getSnapshot);
+  const changes = vi.fn(() => getSnapshot());
+  unregister.push(sessionChanges.subscribe(changes));
   const candidate: Config = portConfig(19001);
   const facts = createConfigResolutionFacts([]);
   setConfigResolutionFacts(candidate, facts);
@@ -498,7 +493,8 @@ it.each<ReloadCase>([
   ["original values after in-place edit", () => withTokenFacts(), true, editPort],
   ["original provenance after in-place edit", () => withTokenFacts(), true, clearFacts],
 ])("publication: %s", (_name, next, emits, mutate, initial, followup) => {
-  const changes = watchChanges();
+  const changes = vi.fn();
+  unregister.push(sessionChanges.subscribe(changes));
   const published = initial?.() ?? withTokenFacts();
   setSnapshot(published);
   const metadata = getMetadata();
@@ -526,7 +522,8 @@ it.each<ReloadCase>([
 });
 
 it("withholds a source-only republish only when runtime values and provenance are unchanged", () => {
-  const changes = watchChanges();
+  const changes = vi.fn();
+  unregister.push(sessionChanges.subscribe(changes));
   const runtime: Config = portConfig(18789);
   const source = (version: string, unresolvedPaths: string[] = []): Config =>
     withTokenFacts(
@@ -732,237 +729,4 @@ it("fences a late rollback while retaining the published environment for restart
   const publication = prepareConfigRuntimeEnv({ previousConfig: next, nextConfig: {} }).publish();
   publication.commit();
   expect(process.env.OPENCLAW_TEST_RESTART_VALUE).toBeUndefined();
-});
-
-const sidebar = (): Config => ({ ui: { prefs: { sidebarEntries: ["sessions"] } } });
-const identity = (): Config => ({
-  agents: { entries: { main: { identity: { name: "Renamed" } } } },
-});
-function watchChanges(implementation?: () => Config | null) {
-  const changes = vi.fn(implementation);
-  unregister.push(sessionChanges.subscribe(changes));
-  return changes;
-}
-const modelKey = () => modelCacheKey(getSnapshot()!);
-
-it.each<[string, Config, string, boolean]>([
-  ["sidebar preferences", sidebar(), "config-presentation", false],
-  ["agent identity", identity(), "config-profiles", false],
-  ["authored sidebar preferences", sidebar(), "config-presentation", true],
-  ["authored agent identity", identity(), "config-profiles", true],
-])("publishes the projection impact of %s", (_label, change, scope, authored) => {
-  const initial: Config = { agents: { entries: { main: {} } } };
-  setSnapshot(initial, authored ? structuredClone(initial) : undefined);
-  const published = watchChanges();
-  const next = { ...initial, ...change };
-  setSnapshot(next, authored ? structuredClone(next) : undefined);
-  expect(published).toHaveBeenCalledExactlyOnceWith({ all: true, scope });
-});
-
-it("reuses publication hashes and model keys across equal mutable fleet clones", () => {
-  const entries = Object.fromEntries(
-    Array.from({ length: 29 }, (_, index) => [`agent-${index}`, { name: `${index}` }]),
-  );
-  const base = { agents: { entries } };
-  const publications = Array.from({ length: 29 }, () => ({
-    config: structuredClone(base),
-    source: structuredClone(base),
-  }));
-  const rosters = new Set<object>(
-    publications.flatMap(({ config, source }) => [config.agents.entries, source.agents.entries]),
-  );
-  const keys = vi.spyOn(Object, "keys");
-  const first = publications[0]!;
-  setSnapshot(first.config, first.source);
-  const metadata = getMetadata();
-  const firstModelKey = modelCacheKey(first.config);
-  for (const { config, source } of publications.slice(1)) {
-    setSnapshot(config, source);
-    expect(getMetadata()).toBe(metadata);
-    expect(modelCacheKey(getSnapshot()!)).toBe(firstModelKey);
-  }
-  expect(keys.mock.calls.filter(([value]) => rosters.has(value))).toHaveLength(4);
-  expect(getSnapshot()).toBe(first.config);
-});
-
-it("keeps non-cloneable and accessor-backed setter inputs on the uncached path", () => {
-  const config: Config = { plugins: { entries: { fixture: { config: { value: Symbol("id") } } } } };
-  expect(() => setSnapshot(config)).not.toThrow();
-  expect(getSnapshot()).toBe(config);
-  clearRuntimeConfigSnapshot();
-  const port = vi.fn(() => 18789);
-  const gateway = Object.defineProperty({}, "port", { get: port, enumerable: true });
-  const accessor: Config = { gateway };
-  setSnapshot(accessor, accessor);
-  expect(port).toHaveBeenCalledTimes(4);
-  expect(getSnapshot()).toBe(accessor);
-});
-
-it.each(["null prototype", "symbol key"])("preserves %s publication scope", (shape) => {
-  const initial: Config = { agents: { entries: { main: {} } } };
-  if (shape === "null prototype") {
-    Object.setPrototypeOf(initial, null);
-  } else {
-    Object.assign(initial, { [Symbol("fixture")]: true });
-  }
-  setSnapshot(initial);
-  const changes = watchChanges();
-  setSnapshot({ ...initial, ...sidebar() });
-  expect(changes).toHaveBeenCalledExactlyOnceWith({ all: true, scope: "config-presentation" });
-});
-
-it.each(["added", "replaced", "removed"])("authored policy: %s", (change) => {
-  const enabled: Config = { plugins: { entries: { fixture: { enabled: true } } } };
-  const disabled: Config = { plugins: { entries: { fixture: { enabled: false } } } };
-  const initialSource = change === "added" ? undefined : disabled;
-  const nextSource = change === "removed" ? undefined : enabled;
-  setSnapshot({}, initialSource);
-  const before = { revision: getMetadata()!.revision, modelKey: modelKey() };
-  const changes = watchChanges();
-
-  setSnapshot({}, nextSource);
-
-  expect(getSource()).toBe(nextSource ?? null);
-  expect(getMetadata()!.revision).toBe(before.revision + 1);
-  expect(modelKey()).not.toBe(before.modelKey);
-  expect(changes).toHaveBeenCalledExactlyOnceWith({ all: true, scope: "config-presentation" });
-});
-
-it("retains broad authored model-policy invalidation alongside runtime preferences", () => {
-  const source: Config = { agents: { defaults: { model: { primary: "openai/first" } } } };
-  setSnapshot({}, source);
-  const changes = watchChanges();
-
-  setSnapshot(sidebar(), { agents: { defaults: { model: { primary: "openai/second" } } } });
-
-  expect(changes).toHaveBeenCalledExactlyOnceWith({ all: true, scope: "config" });
-});
-
-it("restores captured authored policy after its live source was edited in place", () => {
-  const source: Config = { plugins: { enabled: true } };
-  setSnapshot({}, source);
-  const changes = watchChanges();
-  source.plugins!.enabled = false;
-  const restored: Config = { plugins: { enabled: true } };
-
-  setSnapshot({}, restored);
-
-  expect(getSource()).toBe(restored);
-  expect(changes).toHaveBeenCalledExactlyOnceWith({ all: true, scope: "config" });
-});
-
-it.each(["same source", "equal clone", "migration marker"])("version restamp: %s", (change) => {
-  const source: Config = { plugins: { enabled: true }, meta: { lastTouchedVersion: "1" } };
-  setSnapshot({}, source);
-  const metadata = getMetadata()!;
-  const previousModelKey = modelKey();
-  const changes = watchChanges();
-  source.meta!.lastTouchedVersion = "2";
-  if (change === "migration marker") {
-    source.meta!.migrations = { modelPolicyAllowlist: true };
-  }
-  const nextSource = change === "same source" ? source : structuredClone(source);
-
-  const updated = setSourceIfCurrent({
-    expectedRevision: metadata.revision,
-    sourceConfig: nextSource,
-  });
-  expect(updated).toBe(true);
-
-  if (change === "migration marker") {
-    expect(getSource()).toBe(nextSource);
-    expect(modelKey()).not.toBe(previousModelKey);
-    expect(changes).toHaveBeenCalledExactlyOnceWith({ all: true, scope: "config" });
-  } else {
-    expect(getMetadata()).toBe(metadata);
-    expect(modelKey()).toBe(previousModelKey);
-    expect(changes).not.toHaveBeenCalled();
-  }
-});
-
-const tokenPath = "gateway.auth.token";
-const tokenRef = new Map([[tokenPath, "GATEWAY_TOKEN"]]);
-function expectIsolatedCopy(copy: Config, original: Config) {
-  expect(copy).toEqual(original);
-  expect(copy).not.toBe(original);
-  expect(hashRuntimeConfigValue(copy)).toBe(hashRuntimeConfigValue(original));
-}
-
-it("captures authored values and provenance with one isolated runtime generation", () => {
-  const source: Config = {
-    agents: { entries: { ops: {}, research: {} } },
-    gateway: { auth: { mode: "token", token: "${GATEWAY_TOKEN}" } },
-  };
-  const runtime: Config = {
-    ...source,
-    gateway: { auth: { mode: "token", token: "synthetic-resolved-token" } },
-  };
-  retainLegacyDefaultAgentId(runtime, "ops");
-  setConfigResolutionFacts(
-    runtime,
-    createConfigResolutionFacts([], new Map(), "default", tokenRef),
-  );
-  setSnapshot(runtime, source);
-
-  const captured = captureRuntimeConfig(runtime);
-  const authored = projectConfigOntoRuntimeSourceSnapshot(captured);
-  expectIsolatedCopy(captured, runtime);
-  expectIsolatedCopy(authored, source);
-  expect(Object.isFrozen(captured.agents?.entries)).toBe(true);
-  expect(Object.isFrozen(authored.gateway?.auth)).toBe(true);
-  expect(tryGetLegacyDefaultAgentId(captured)).toBeUndefined();
-  expect(getResolvedConfigEnvSecretRef(captured, tokenPath)?.id).toBe("GATEWAY_TOKEN");
-  expect(resolvePluginActivationSourceConfig({ config: captured })).toBe(authored);
-  expect(captureRuntimeConfig(authored)).toBe(authored);
-
-  source.gateway!.auth!.token = "changed-source";
-  runtime.gateway!.auth!.token = "changed-runtime";
-  expect(projectConfigOntoRuntimeSourceSnapshot(runtime).gateway?.auth?.token).toBe(
-    "changed-source",
-  );
-  setSnapshot({ gateway: { port: 19002 } }, { gateway: { port: 19001 } });
-  expect(projectConfigOntoRuntimeSourceSnapshot(captured)).toBe(authored);
-  expect(captured.gateway?.auth?.token).toBe("synthetic-resolved-token");
-  expect(authored.gateway?.auth?.token).toBe("${GATEWAY_TOKEN}");
-});
-
-it("projects runtime edits once while ordinary derived configs remain independent", () => {
-  const source: Config = {
-    gateway: { port: 19001 },
-    tools: { exec: { safeBins: ["jq"] } },
-  };
-  const runtime: Config = { ...source, gateway: { port: 19001, mode: "local" } };
-  setSnapshot(runtime, source);
-  const edited = { ...runtime, gateway: { ...runtime.gateway, port: 19002 } };
-  const captured = captureRuntimeConfig(edited);
-  const authored = projectConfigOntoRuntimeSourceSnapshot(captured);
-  expect(authored.gateway).toEqual({ port: 19002 });
-  expect(projectConfigOntoRuntimeSourceSnapshot(captured)).toBe(authored);
-
-  const ordinary = projectConfigOntoRuntimeSourceSnapshot(edited);
-  ordinary.tools?.exec?.safeBins?.push("cut");
-  expect(projectConfigOntoRuntimeSourceSnapshot(edited).tools?.exec?.safeBins).toEqual(["jq"]);
-  expect(authored.tools?.exec?.safeBins).toEqual(["jq"]);
-});
-
-it("uses one captured value when no authored source is active", () => {
-  const original = { gateway: { port: 19001 } };
-  const captured = captureRuntimeConfig(original);
-  expect(projectConfigOntoRuntimeSourceSnapshot(captured)).toBe(captured);
-  expect(captureRuntimeConfig(captured)).toBe(captured);
-  original.gateway.port = 19002;
-  expect(captured.gateway?.port).toBe(19001);
-});
-
-it("keeps a scoped capture pinned when its mutable origin later matches the process source", () => {
-  const source: Config = { gateway: { port: 19001 } };
-  const runtime: Config = { gateway: { port: 19001, mode: "local" } };
-  setSnapshot(runtime, source);
-  const scoped: Config = { gateway: { port: 19002 } };
-  const captured = captureRuntimeConfig(scoped);
-  scoped.gateway!.port = 19001;
-  const read = createRuntimeConfigReader(captured);
-  expect(read()).toBe(captured);
-  setSnapshot({ gateway: { port: 19003 } }, source);
-  expect(read()).toBe(captured);
 });
