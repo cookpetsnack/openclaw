@@ -401,8 +401,10 @@ it("disables at the config acknowledgement without erasing remembered consent", 
   try {
     holdReads = true;
     clickAgent(page);
-    await waitForSolid(() => expect(agentText(page)).toContain("Saving"));
-    expect(toggle(page)).toMatchObject({ checked: false, disabled: true });
+    await waitForSolid(() => {
+      expect(agentText(page)).toContain("Saving");
+      expect(toggle(page)).toMatchObject({ checked: false, disabled: true });
+    });
     acknowledgement.resolve({ config: config(false), hash: "saved" });
 
     await waitForSolid(() => {
