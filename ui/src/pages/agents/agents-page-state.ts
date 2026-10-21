@@ -1,6 +1,6 @@
 import { createSignal, onSettled } from "solid-js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
-import type { AgentsFilesListResult, SkillStatusReport } from "../../api/types.ts";
+import type { AgentsFilesListResult } from "../../api/types.ts";
 import { pathForAgentPanel } from "../../app-route-paths.ts";
 import { togglePinnedAgent } from "../../app/bootstrap-navigation-preferences.ts";
 import type { ApplicationContext } from "../../app/context.ts";
@@ -55,21 +55,18 @@ import {
 } from "./route-navigation.ts";
 import type { AgentsRouteData } from "./route.ts";
 import { createAgentSelectionDrafts } from "./selection-drafts.ts";
-import { clearAgentSkillFilter, loadAgentSkills } from "./skills.ts";
+import { clearAgentSkillFilter, createAgentSkillsReader, type AgentSkillsState } from "./skills.ts";
 import { createAgentToolsCatalog, createAgentEffectiveTools } from "./tools.ts";
 
 type AgentsPageData = Omit<AgentsState, "agentsLoading" | "agentsError"> &
-  AgentFilesState & {
+  AgentFilesState &
+  AgentSkillsState & {
     chatModelCatalogRead: Promise<void> | null;
     agentFilesList: AgentsFilesListResult | null;
     agentFileActive: string | null;
     identityDraft: AgentIdentityDraft;
     identitySaving: boolean;
     identityError: string | null;
-    agentSkillsLoading: boolean;
-    agentSkillsError: string | null;
-    agentSkillsReport: SkillStatusReport | null;
-    agentSkillsAgentId: string | null;
     cron: CronState;
     sessionKey: string;
     agentsPanel: AgentsPanel;
@@ -112,8 +109,8 @@ export function createAgentsPageState(
     identityDraft: { name: null, emoji: null, avatar: null },
     identitySaving: false,
     identityError: null,
-    agentSkillsLoading: false,
-    agentSkillsError: null,
+    agentSkillsRead: null,
+    agentSkillsUpdateError: null,
     agentSkillsReport: null,
     agentSkillsAgentId: null,
     cron: createInitialCronState(),
@@ -159,6 +156,7 @@ export function createAgentsPageState(
   const selectionDrafts = createAgentSelectionDrafts(state, resetSelectionState);
   let identitySaves = selectionDrafts.bindContext(context);
   let identityAutosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  const skills = createAgentSkillsReader(state);
   let catalogRecoveryPending = false;
   let catalogNeedsRecovery = false;
   const modelReader = new ModelCatalogReader(publish, {
@@ -311,7 +309,7 @@ export function createAgentsPageState(
     state.agentFilesLoading = false;
     state.agentFileSaving = false;
     state.identitySaving = false;
-    state.agentSkillsLoading = false;
+    skills.reset();
     toolsCatalog.invalidate();
     effectiveTools.reset();
     cron.retire();
@@ -434,7 +432,7 @@ export function createAgentsPageState(
       return;
     }
     if (state.agentsPanel === "skills" && state.agentSkillsAgentId !== agentId) {
-      void loadAgentSkills(state, agentId);
+      skills.refresh(agentId);
       return;
     }
     if (state.agentsPanel === "tools") {
@@ -643,8 +641,8 @@ export function createAgentsPageState(
     resetModelCatalog();
     resetAgentFiles(state);
     state.agentSkillsReport = null;
-    state.agentSkillsLoading = false;
-    state.agentSkillsError = null;
+    skills.reset();
+    state.agentSkillsUpdateError = null;
     state.agentSkillsAgentId = null;
     resetIdentityDraft(state);
     toolsCatalog.reset();
@@ -746,12 +744,12 @@ export function createAgentsPageState(
         return;
       }
       if (!updated) {
-        state.agentSkillsError =
+        state.agentSkillsUpdateError =
           runtimeConfig.state.lastError ?? t("agents.skillsPanel.updateError");
         return;
       }
-      state.agentSkillsError = null;
-      void loadAgentSkills(state, agentId);
+      state.agentSkillsUpdateError = null;
+      skills.refresh(agentId);
     });
   }
 
@@ -894,7 +892,7 @@ export function createAgentsPageState(
         },
         onRefresh: () => {
           if (selectedAgentId) {
-            void loadAgentSkills(state, selectedAgentId);
+            skills.refresh(selectedAgentId);
           }
         },
         ...configActions.skills,

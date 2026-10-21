@@ -140,6 +140,18 @@ describe("Agents tools catalog read", () => {
     expect(view.container.querySelector(".agent-tool-card")).not.toBeNull();
     expect(view.container.querySelector("openclaw-github-identity")).toBe(identityHost);
 
+    view.page.read().agentSkills.onFilterChange("unrelated filter");
+    await waitForSolid(() => expect(view.page.read().agentSkills.filter).toBe("unrelated filter"));
+    await waitForSolid(() => {
+      expect(view.container.textContent).toContain("Showing built-in fallback list instead.");
+      expect(
+        Array.from(view.container.querySelectorAll("button")).some(
+          (button) => button.textContent?.trim() === "Retry",
+        ),
+      ).toBe(true);
+      expect(view.catalogCalls()).toHaveLength(1);
+    });
+
     const retry = Array.from(view.container.querySelectorAll<HTMLButtonElement>("button")).find(
       (button) => button.textContent?.trim() === "Retry",
     );

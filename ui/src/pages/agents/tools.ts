@@ -21,14 +21,13 @@ type CatalogRequest = {
 export function createAgentToolsCatalog(options: ReadOptions) {
   let target: CatalogRequest | null = null;
   let accepted: CatalogRequest | null = null;
-  const [request, setRequest] = createSignal<CatalogRequest | null>(null);
+  const [request, setRequest] = createSignal<{
+    result: Promise<ToolsCatalogResult | null>;
+  } | null>(null);
   const isCurrent = (current: CatalogRequest) =>
     target === current && options.isCurrent(current.client, current.generation, current.agentId);
-  const read: () => ToolsCatalogResult | null = createMemo(async () => {
-    const current = request();
-    if (!current || !isCurrent(current)) {
-      return null;
-    }
+  const read: () => ToolsCatalogResult | null = createMemo(async () => request()?.result ?? null);
+  async function load(current: CatalogRequest) {
     try {
       const result = await current.client.request<ToolsCatalogResult>("tools.catalog", {
         agentId: current.agentId,
@@ -46,7 +45,7 @@ export function createAgentToolsCatalog(options: ReadOptions) {
       target = null;
       throw error;
     }
-  });
+  }
   function ensure(agentId: string) {
     const { client, connected, requestGeneration: generation } = options.scope();
     if (!client || !connected) {
@@ -61,7 +60,10 @@ export function createAgentToolsCatalog(options: ReadOptions) {
     }
     accepted = null;
     target = { client, generation, agentId };
-    setRequest(target);
+    const result = load(target);
+    // A hidden panel can leave the receipt unobserved until it is revisited.
+    void result.catch(() => undefined);
+    setRequest({ result });
   }
   function reset() {
     target = null;
@@ -92,14 +94,13 @@ export function createAgentEffectiveTools(
   let target: EffectiveRequest | null = null;
   let accepted: EffectiveRequest | null = null;
   let cached: ToolsEffectiveResult | null = null;
-  const [request, setRequest] = createSignal<EffectiveRequest | null>(null);
+  const [request, setRequest] = createSignal<{
+    result: Promise<ToolsEffectiveResult | null>;
+  } | null>(null);
   const isCurrent = (current: EffectiveRequest) =>
     target === current && options.isCurrent(current.client, current.generation, current.agentId);
-  const read: () => ToolsEffectiveResult | null = createMemo(async () => {
-    const current = request();
-    if (!current || !isCurrent(current)) {
-      return null;
-    }
+  const read: () => ToolsEffectiveResult | null = createMemo(async () => request()?.result ?? null);
+  async function load(current: EffectiveRequest) {
     try {
       const result = await readToolsEffective(current.client, {
         agentId: current.agentId,
@@ -120,7 +121,7 @@ export function createAgentEffectiveTools(
       target = null;
       throw error;
     }
-  });
+  }
   function ensure(agentId: string, sessionKey: string, refresh = false) {
     const { client, connected, requestGeneration: generation } = options.scope();
     const resolvedAgentId = agentId.trim();
@@ -142,7 +143,9 @@ export function createAgentEffectiveTools(
       cached = null;
     }
     target = { client, generation, agentId: resolvedAgentId, sessionKey: resolvedSessionKey, key };
-    setRequest(target);
+    const result = load(target);
+    void result.catch(() => undefined);
+    setRequest({ result });
   }
   function reset() {
     target = null;

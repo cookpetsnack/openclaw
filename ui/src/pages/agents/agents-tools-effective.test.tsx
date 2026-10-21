@@ -176,6 +176,11 @@ describe("Agents effective-tools read", () => {
     expect(preset.disabled).toBe(false);
     next.reject(new Error("gateway unavailable"));
     await waitForSolid(() => expect(view.container.textContent).toContain("Unavailable"));
+    view.page.read().agentSkills.onFilterChange("unrelated filter");
+    await waitForSolid(() => {
+      expect(view.container.textContent).toContain("Unavailable");
+      expect(view.calls()).toHaveLength(2);
+    });
     expect(view.container.querySelector("#agent-tool-read")).toBe(card);
     expect(card.open).toBe(true);
     expect(group.open).toBe(true);
