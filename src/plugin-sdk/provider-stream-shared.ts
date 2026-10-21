@@ -1,4 +1,7 @@
-import { resolveOpenAIReasoningEffortForModel } from "@openclaw/ai/internal/openai";
+import {
+  resolveOpenAIReasoningEffortForModel,
+  type OpenAIResponsesOptions,
+} from "@openclaw/ai/internal/openai";
 import {
   createEmptyTransportUsage,
   resolveOpenAIReasoningEffortMap,
@@ -278,12 +281,18 @@ export function createOpenAIHostedWebSearchWrapper(
     NonNullable<Parameters<typeof createPayloadPatchStreamWrapper>[2]>["shouldPatch"]
   >,
 ): StreamFn {
-  return createPayloadPatchStreamWrapper(
-    baseStreamFn,
-    ({ payload, options }) => {
-      (
-        options as { openclawCodeModeAllowedHostedToolTypes?: Set<string> } | undefined
-      )?.openclawCodeModeAllowedHostedToolTypes?.add("web_search");
+  const underlying = baseStreamFn ?? streamSimple;
+  return (
+    model,
+    context,
+    options?: Parameters<StreamFn>[2] &
+      Pick<OpenAIResponsesOptions, "openclawCodeModeAllowedHostedToolTypes">,
+  ) => {
+    if (!shouldPatch({ model, context, options })) {
+      return underlying(model, context, options);
+    }
+    return streamWithPayloadPatch(underlying, model, context, options, (payload) => {
+      options?.openclawCodeModeAllowedHostedToolTypes?.add("web_search");
       const existingTools = Array.isArray(payload.tools) ? payload.tools : [];
       const filteredTools = existingTools.filter((tool) => {
         const record = asOptionalObjectRecord(tool);
@@ -300,9 +309,8 @@ export function createOpenAIHostedWebSearchWrapper(
       if (reasoning?.effort === "minimal") {
         reasoning.effort = "low";
       }
-    },
-    { shouldPatch },
-  );
+    });
+  };
 }
 
 /**
