@@ -1,6 +1,6 @@
 import { createSignal, onSettled } from "solid-js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
-import type { AgentsFilesListResult, SkillStatusReport } from "../../api/types.ts";
+import type { AgentsFilesListResult } from "../../api/types.ts";
 import { pathForAgentPanel } from "../../app-route-paths.ts";
 import { togglePinnedAgent } from "../../app/bootstrap-navigation-preferences.ts";
 import type { ApplicationContext } from "../../app/context.ts";
@@ -59,20 +59,21 @@ import {
 } from "./route-navigation.ts";
 import type { AgentsRouteData } from "./route.ts";
 import { createAgentSelectionDrafts } from "./selection-drafts.ts";
-import { createAgentSkillsReset, loadAgentSkills } from "./skills.ts";
+import {
+  createAgentSkillsReset,
+  createAgentSkillsReader,
+  type AgentSkillsState,
+} from "./skills.ts";
 
 type AgentsPageData = Omit<AgentsState, "agentsLoading" | "agentsError"> &
-  AgentFilesState & {
+  AgentFilesState &
+  AgentSkillsState & {
     chatModelCatalogRead: Promise<void> | null;
     agentFilesList: AgentsFilesListResult | null;
     agentFileActive: string | null;
     identityDraft: AgentIdentityDraft;
     identitySaving: boolean;
     identityError: string | null;
-    agentSkillsLoading: boolean;
-    agentSkillsError: string | null;
-    agentSkillsReport: SkillStatusReport | null;
-    agentSkillsAgentId: string | null;
     cron: CronState;
     sessionKey: string;
     agentsPanel: AgentsPanel;
@@ -126,8 +127,7 @@ export function createAgentsPageState(
     identityDraft: { name: null, emoji: null, avatar: null },
     identitySaving: false,
     identityError: null,
-    agentSkillsLoading: false,
-    agentSkillsError: null,
+    agentSkillsRead: null,
     agentSkillsReport: null,
     agentSkillsAgentId: null,
     cron: createInitialCronState(),
@@ -173,13 +173,14 @@ export function createAgentsPageState(
   const selectionDrafts = createAgentSelectionDrafts(state, resetSelectionState);
   let identitySaves = selectionDrafts.bindContext(context);
   let identityAutosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  const skills = createAgentSkillsReader(state);
   const skillReset = createAgentSkillsReset({
     state,
     context,
     canReset: () => canCall("config.patch", "operator.admin"),
     isCurrent: (client, generation, agentId, agents) =>
       isCurrentRequest(client, generation, agentId, { agents }),
-    onUpdated: (agentId) => void loadAgentSkills(state, agentId),
+    onUpdated: (agentId) => skills.refresh(agentId),
   });
   let catalogRecoveryPending = false;
   let catalogNeedsRecovery = false;
@@ -321,7 +322,7 @@ export function createAgentsPageState(
     state.agentFilesLoading = false;
     state.agentFileSaving = false;
     state.identitySaving = false;
-    state.agentSkillsLoading = false;
+    skills.reset();
     state.toolsCatalogLoading = false;
     state.toolsCatalogLoadingAgentId = null;
     resetToolsEffectiveState(state);
@@ -445,7 +446,7 @@ export function createAgentsPageState(
       return;
     }
     if (state.agentsPanel === "skills" && state.agentSkillsAgentId !== agentId) {
-      void loadAgentSkills(state, agentId);
+      skills.refresh(agentId);
       return;
     }
     if (state.agentsPanel === "tools") {
@@ -657,8 +658,7 @@ export function createAgentsPageState(
     resetModelCatalog();
     resetAgentFiles(state);
     state.agentSkillsReport = null;
-    state.agentSkillsLoading = false;
-    state.agentSkillsError = null;
+    skills.reset();
     state.agentSkillsAgentId = null;
     resetIdentityDraft(state);
     state.toolsCatalogResult = null;
@@ -882,7 +882,7 @@ export function createAgentsPageState(
         },
         onRefresh: () => {
           if (selectedAgentId) {
-            void loadAgentSkills(state, selectedAgentId);
+            skills.refresh(selectedAgentId);
           }
         },
         ...configActions.skills,
