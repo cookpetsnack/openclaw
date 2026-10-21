@@ -248,6 +248,7 @@ describe("MCP app pane actions", () => {
     const host = Object.assign(makeChatHost({ client: f.client, sessionKey: f.state.sessionKey }), {
       handleSendChat: f.state.handleSendChat,
       handleOpenSidebar: f.state.handleOpenSidebar,
+      sidebarContent: f.state.sidebarContent,
     });
     f.owner.state = host;
     const sent = message(host.sessionKey, "new");
@@ -312,6 +313,7 @@ describe("MCP app pane actions", () => {
     const host = Object.assign(makeChatHost({ client: f.client, sessionKey: f.state.sessionKey }), {
       handleSendChat: f.state.handleSendChat,
       handleOpenSidebar: f.state.handleOpenSidebar,
+      sidebarContent: f.state.sidebarContent,
     });
     f.owner.state = host;
     const sent = message(host.sessionKey, "new");
@@ -344,6 +346,7 @@ describe("MCP app pane actions", () => {
         assistantAgentId: "main",
         handleSendChat: f.state.handleSendChat,
         handleOpenSidebar: f.state.handleOpenSidebar,
+        sidebarContent: f.state.sidebarContent,
       });
       f.owner.state = host;
       const create = vi.fn(async () => null);
