@@ -54,9 +54,8 @@ import type { DiffValue, FileSource, FileView } from "./session-diff-types.ts";
 
 registerEnglishCatalog(registerChatSessionEnglish);
 
-function shellArgument(value: string) {
-  return /^[A-Za-z0-9_./:@+-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
-}
+const shellArgument = (value: string) =>
+  /^[A-Za-z0-9_./:@+-]+$/.test(value) ? value : `'${value.replaceAll("'", `'\\''`)}'`;
 
 export function SessionDiffPanel(props: SessionDiffProps) {
   const desktop = () => props.mobile === false;
@@ -139,6 +138,7 @@ export function SessionDiffPanel(props: SessionDiffProps) {
     target: requestTarget(),
     reload: reload(),
     result: Promise.withResolvers<{ error: unknown } | null>(),
+    deferred: false,
   }));
   const [computing, setComputing] = createSignal(false);
   // The queued plain request can start even while its read parks a commit.
@@ -235,8 +235,16 @@ export function SessionDiffPanel(props: SessionDiffProps) {
       completion.resolve(null);
       return;
     }
-    if (props.active === false || document.visibilityState === "hidden") {
+    if (latest(() => props.active) === false || document.visibilityState === "hidden") {
       setComputing(true);
+      // Deferred background reads must not hold the visible sibling's transition.
+      initialRequest.deferred = true;
+      completion.resolve(null);
+      return;
+    }
+    if (initialRequest.deferred) {
+      // Activation needs a fresh receipt so its result and errors remain observable.
+      setReload({ target });
       return;
     }
     setComputing(false);
@@ -304,9 +312,7 @@ export function SessionDiffPanel(props: SessionDiffProps) {
       }
     }
   }
-  function loadDiff() {
-    setReload({ target: requestTarget() });
-  }
+  const loadDiff = () => setReload({ target: requestTarget() });
   function jumpToFile(path: string) {
     setMotionInstant(true);
     setSelectedPath(path);
@@ -342,13 +348,12 @@ export function SessionDiffPanel(props: SessionDiffProps) {
       });
     }
   }
-  function collapseAll() {
+  const collapseAll = () =>
     setCollapsedFiles(() =>
       Object.fromEntries<true>(
         (value()?.views ?? []).map(({ file }) => [`file:${file.path}`, true]),
       ),
     );
-  }
   function toggleTree() {
     const next = !treeOpen();
     setTreeOpen(next);
@@ -360,9 +365,7 @@ export function SessionDiffPanel(props: SessionDiffProps) {
   function searchTree() {
     setTreeOpen(true);
     setTreeSearchOpen(true);
-    onSettled(() => {
-      treeSearch?.focus();
-    });
+    onSettled(() => treeSearch?.focus());
   }
   function openAnchoredMenu(
     event: Event,

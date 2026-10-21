@@ -138,6 +138,62 @@ describe("SessionDiffPanel readiness", () => {
     expect(panel.textContent).not.toContain("feature/replacement");
   });
 
+  it.each(["resolve", "reject"])(
+    "defers an inactive owner read without holding its sibling's transition: %s",
+    async (outcome) => {
+      vi.useFakeTimers();
+      onTestFinished(() => vi.useRealTimers());
+      const pending = deferred<SessionsDiffResult>();
+      const loader = vi
+        .fn<NonNullable<SessionDiffProps["loader"]>>()
+        .mockResolvedValueOnce(result("original"))
+        .mockReturnValueOnce(pending.promise);
+      const [props, setProps] = createSignal<SessionDiffProps>({
+        owner: { agentId: "main", sessionKey: "original-session" },
+        active: true,
+        mobile: false,
+        execNode: null,
+        loader,
+        loadFileText: null,
+        openFile: null,
+        revealFile: null,
+      });
+      const view = mountSolid(() => (
+        <>
+          <span data-sibling>{props().owner?.sessionKey}</span>
+          <SessionDiffPanel {...props()} />
+        </>
+      ));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(view.container.textContent).toContain("original");
+      setProps((current) => ({
+        ...current,
+        active: false,
+        owner: { agentId: "main", sessionKey: "replacement-session" },
+      }));
+      await vi.advanceTimersByTimeAsync(0);
+      expect(view.container.querySelector("[data-sibling]")?.textContent).toBe(
+        "replacement-session",
+      );
+      expect(loader).toHaveBeenCalledTimes(1);
+
+      setProps((current) => ({ ...current, active: true }));
+      await vi.advanceTimersByTimeAsync(500);
+      expect(loader).toHaveBeenCalledTimes(2);
+      if (outcome === "reject") {
+        pending.reject(new Error("Deferred diff unavailable"));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(view.container.querySelector(".callout.danger")?.textContent).toContain(
+          "Deferred diff unavailable",
+        );
+      } else {
+        pending.resolve(result("replacement"));
+        await vi.advanceTimersByTimeAsync(0);
+        expect(view.container.querySelector(".session-diff")?.textContent).toContain("replacement");
+      }
+    },
+  );
+
   it("shows loading instead of the old files while a changed scope is pending", async () => {
     const pending = deferred<SessionsDiffResult>();
     const loader = vi
