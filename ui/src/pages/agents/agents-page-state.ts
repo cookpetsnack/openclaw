@@ -59,7 +59,7 @@ import {
 } from "./route-navigation.ts";
 import type { AgentsRouteData } from "./route.ts";
 import { createAgentSelectionDrafts } from "./selection-drafts.ts";
-import { clearAgentSkillFilter, loadAgentSkills } from "./skills.ts";
+import { createAgentSkillsReset, loadAgentSkills } from "./skills.ts";
 
 type AgentsPageData = Omit<AgentsState, "agentsLoading" | "agentsError"> &
   AgentFilesState & {
@@ -173,6 +173,14 @@ export function createAgentsPageState(
   const selectionDrafts = createAgentSelectionDrafts(state, resetSelectionState);
   let identitySaves = selectionDrafts.bindContext(context);
   let identityAutosaveTimer: ReturnType<typeof setTimeout> | null = null;
+  const skillReset = createAgentSkillsReset({
+    state,
+    context,
+    canReset: () => canCall("config.patch", "operator.admin"),
+    isCurrent: (client, generation, agentId, agents) =>
+      isCurrentRequest(client, generation, agentId, { agents }),
+    onUpdated: (agentId) => void loadAgentSkills(state, agentId),
+  });
   let catalogRecoveryPending = false;
   let catalogNeedsRecovery = false;
   const modelReader = new ModelCatalogReader(publish, {
@@ -308,6 +316,7 @@ export function createAgentsPageState(
   }
 
   function invalidateTransientRequests() {
+    skillReset.retire();
     gateway.invalidate();
     state.agentFilesLoading = false;
     state.agentFileSaving = false;
@@ -642,6 +651,7 @@ export function createAgentsPageState(
   }
 
   function resetSelectionState() {
+    skillReset.retire();
     clearIdentityAutosave();
     gateway.invalidate();
     resetModelCatalog();
@@ -731,35 +741,6 @@ export function createAgentsPageState(
       name,
       state.agentFileEditors[name]?.draft ?? state.agentFileEditors[name]?.content ?? "",
     );
-  }
-
-  function clearAgentSkills(agentId: string) {
-    if (!canCall("config.patch", "operator.admin")) {
-      return;
-    }
-    const client = state.client;
-    const generation = state.requestGeneration;
-    const agents = context.agents;
-    const runtimeConfig = context.runtimeConfig;
-    if (!client) {
-      return;
-    }
-    const canDispatch = () =>
-      context.runtimeConfig === runtimeConfig &&
-      isCurrentRequest(client, generation, agentId, { agents }) &&
-      canCall("config.patch", "operator.admin");
-    if (!canDispatch()) {
-      return;
-    }
-    return clearAgentSkillFilter(runtimeConfig, agentId, canDispatch).then((updated) => {
-      if (!canDispatch()) {
-        return;
-      }
-      if (!updated) {
-        throw new Error(runtimeConfig.state.lastError ?? t("agents.skillsPanel.updateError"));
-      }
-      void loadAgentSkills(state, agentId);
-    });
   }
 
   function viewProps() {
@@ -905,7 +886,7 @@ export function createAgentsPageState(
           }
         },
         ...configActions.skills,
-        onClear: (agentId: string) => clearAgentSkills(agentId),
+        onClear: (agentId: string) => skillReset.clear(agentId),
       },
       tools: {
         githubIdentity,
@@ -990,6 +971,7 @@ export function createAgentsPageState(
       selectionDrafts.retainCurrentIdentity();
       clearIdentityAutosave();
       active = false;
+      skillReset.retire();
       cron.retire();
       observation.dispose();
       for (const stop of stops) {
@@ -1007,6 +989,9 @@ export function createAgentsPageState(
     setRouteData(next?: AgentsRouteData) {
       if (next === routeData) {
         return;
+      }
+      if (next?.panel !== routeData?.panel) {
+        skillReset.retire();
       }
       routeData = next;
       applyRoute();

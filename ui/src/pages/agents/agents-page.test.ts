@@ -184,6 +184,10 @@ describe("AgentsPage gateway lifecycle", () => {
     });
 
     const completion = page.read().agentSkills.onClear("main");
+    let presentationSettled = false;
+    void completion?.then(() => {
+      presentationSettled = true;
+    });
     await waitForFast(() => expect(patch).toHaveBeenCalledOnce());
     const canDispatch = vi.mocked(patch).mock.calls[0]?.[0]?.canDispatch;
     expect(canDispatch?.()).toBe(true);
@@ -192,7 +196,9 @@ describe("AgentsPage gateway lifecycle", () => {
     emitGatewaySnapshot(currentGateway, snapshot(client));
 
     expect(canDispatch?.()).toBe(false);
-    result.resolve(false);
+    await waitForFast(() => expect(presentationSettled).toBe(true));
+    result.reject(new Error("Retired reset failed."));
+    await result.promise.catch(() => undefined);
     await expect(completion).resolves.toBeUndefined();
   });
 
