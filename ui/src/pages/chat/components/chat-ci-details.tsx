@@ -333,8 +333,8 @@ function ChatCiDetailsContent(props: ChatCiDetailsProps, host: ChatCiDetailsElem
   const model = createCiDetails(host);
   const state = model.state;
   const retryWait = () => Math.max(0, state.retryAt - Date.now());
-  const result = () => latest(model.read);
-  const loading = () => isPending(model.read);
+  const result = createMemo(() => latest(model.read));
+  const loading = createMemo(() => isPending(model.read));
   const checks = () => result()?.checks ?? [];
   const jobs = () =>
     checks()
