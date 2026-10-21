@@ -63,6 +63,7 @@ export function createModelProviderLogin(options: LoginOptions) {
   let focusPicker: "search" | "method" | null = null;
   let generation = 0;
   let mutationActive = false;
+  let externalStepReady: (() => void) | undefined;
   let refreshWarning: string | null = null;
   let message: ModelProviderRowMessage | undefined;
   let loginMode: "auth" | "activate" | "access" = "auth";
@@ -74,6 +75,7 @@ export function createModelProviderLogin(options: LoginOptions) {
     getClient: () => options.getScope().context.gateway.snapshot.client,
     getAgentId: () => options.getScope().agentId,
     onClose: () => reset(),
+    onExternalStep: () => externalStepReady?.(),
     onAnswer: (value, includeValue) => void run(() => runner.answer(value, includeValue)),
     onBackgroundCompletion: (completion) => run(() => Promise.resolve(completion), true),
     requestFailedMessage: () => t("modelProviders.requestFailed"),
@@ -318,6 +320,7 @@ export function createModelProviderLogin(options: LoginOptions) {
     methodChoices = undefined;
     apiKeyChoice = undefined;
     mutationActive = false;
+    externalStepReady = undefined;
     refreshWarning = null;
     message = undefined;
     loginMode = "auth";
@@ -621,10 +624,20 @@ export function createModelProviderLogin(options: LoginOptions) {
       options.getScope().context.gateway.snapshot.client === client &&
       options.getScope().connectionEpoch === connectionEpoch &&
       options.getScope().agentId === agentId;
+    const externalStep = Promise.withResolvers<void>();
+    externalStepReady = externalStep.resolve;
     const operation = settleRun();
-    void presentation.run("wizard", operation, retired, isCurrent, (error) => {
-      runner.fail(formatUiError(error, t("modelProviders.requestFailed")));
-    });
+    // The runner may keep reading after exposing the browser URL. Let that
+    // human-input checkpoint render while the owner still awaits its callback.
+    void presentation.run(
+      "wizard",
+      operation,
+      Promise.race([retired, externalStep.promise]),
+      isCurrent,
+      (error) => {
+        runner.fail(formatUiError(error, t("modelProviders.requestFailed")));
+      },
+    );
     return operation;
 
     async function settleRun(): Promise<void> {
@@ -671,6 +684,9 @@ export function createModelProviderLogin(options: LoginOptions) {
           runner.fail(formatUiError(error, t("modelProviders.requestFailed")));
         }
       } finally {
+        if (externalStepReady === externalStep.resolve) {
+          externalStepReady = undefined;
+        }
         if (currentGeneration === generation) {
           mutationActive = false;
           notify();

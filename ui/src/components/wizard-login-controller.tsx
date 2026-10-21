@@ -23,6 +23,7 @@ export function createWizardLogin(options: {
   sessionExpiredMessage: () => string;
   finishingMessage?: () => string;
   onAnswer?: (value: unknown, includeValue?: boolean) => void;
+  onExternalStep?: () => void;
   onBackgroundCompletion?: (completion: ModelSetupWizardCompletion) => Promise<void>;
 }) {
   const [state, setState] = createSignal<ModelSetupWizardState>({ phase: "idle" });
@@ -54,6 +55,9 @@ export function createWizardLogin(options: {
       }
       stepId = next.phase === "step" ? next.step.id : null;
       setState(next);
+      if (next.phase === "step" && (next.step.externalUrl || next.step.deviceCode)) {
+        options.onExternalStep?.();
+      }
     },
     cancelledMessage: () => t("modelSetup.wizard.cancelled"),
     gatewayNotRespondingMessage: () => t("modelSetup.wizard.gatewayNotResponding"),
