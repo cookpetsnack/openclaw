@@ -10,7 +10,9 @@ import {
   createOptimistic,
   createSignal,
   isPending,
+  latest,
   onSettled,
+  refresh,
 } from "solid-js";
 import type { SkillStatusReport } from "../../api/types.ts";
 import {
@@ -58,7 +60,7 @@ export function AgentSkills(params: AgentSkillsProps) {
   const scope = createMemo(() => `${params.agentId}:${params.readData().requestGeneration}`);
   return (
     <Show when={scope()} keyed>
-      {(_scope) => {
+      {(capturedScope) => {
         const config = createMemo(() => resolveAgentConfig(params.configForm, params.agentId));
         const [explicit, setExplicit] = createOptimistic(() =>
           Array.isArray(config().entry?.skills),
@@ -73,6 +75,9 @@ export function AgentSkills(params: AgentSkillsProps) {
           setExplicit(false);
           setResetting(true);
           yield completion;
+          if (latest(scope) === capturedScope) {
+            yield refresh(explicit);
+          }
         });
         const onClear = () => {
           const completion = params.onClear(params.agentId);
