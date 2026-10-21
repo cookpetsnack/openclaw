@@ -115,6 +115,16 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanupDirs) => {
     cleanupDirs();
   });
 });
+
+function expectContains(text: string, fragments: string[]) {
+  for (const fragment of fragments) {
+    expect(text).toContain(fragment);
+  }
+}
+
+function writeJson(path: string, value: unknown) {
+  writeFileSync(path, JSON.stringify(value), "utf8");
+}
 let receipts: FixtureReceiptChannel;
 beforeAll(async () => {
   receipts = await openFixtureReceiptChannel();
@@ -281,20 +291,15 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
   });
 
   it("fails closed before borrowing an occupied managed-service account", () => {
-    expect(() =>
-      assertManagedGatewayInstallerHostAvailable({
-        accountHome: "C:\\Users\\runneradmin",
-        serviceInstalled: true,
-        pathExists: () => false,
-      }),
-    ).toThrow(/pristine host account/);
-    expect(() =>
-      assertManagedGatewayInstallerHostAvailable({
-        accountHome: "C:\\Users\\runneradmin",
-        serviceInstalled: false,
-        pathExists: (path) => path.endsWith(".openclaw"),
-      }),
-    ).toThrow(/pristine host account/);
+    for (const serviceInstalled of [true, false]) {
+      expect(() =>
+        assertManagedGatewayInstallerHostAvailable({
+          accountHome: "C:\\Users\\runneradmin",
+          serviceInstalled,
+          pathExists: (path) => !serviceInstalled && path.endsWith(".openclaw"),
+        }),
+      ).toThrow(/pristine host account/);
+    }
   });
 
   it("requires a structured clean-service preflight result", () => {
@@ -336,26 +341,20 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
       platform: "linux",
     });
 
-    expect(windowsScript).toContain(
+    expectContains(windowsScript, [
       "curl.exe -fsSL --connect-timeout 10 --max-time 120 -o $installerPath 'https://openclaw.ai/install.ps1'",
-    );
-    expect(windowsScript).toContain("openclaw-installer-");
-    expect(windowsScript).toContain("if ($LASTEXITCODE -ne 0)");
-    expect(windowsScript).toContain(
+      "openclaw-installer-",
+      "if ($LASTEXITCODE -ne 0)",
       "[System.IO.File]::ReadAllText($installerPath, [System.Text.Encoding]::UTF8)",
-    );
-    expect(windowsScript).toContain(
       "Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue",
-    );
+    ]);
     expect(windowsScript).not.toContain("Invoke-WebRequest");
-    expect(posixScript).toContain(
+    expectContains(posixScript, [
       'installer_path="$(mktemp "${TMPDIR:-/tmp}/openclaw-installer-XXXXXX")"',
-    );
-    expect(posixScript).toContain("trap 'rm -f \"$installer_path\"' EXIT");
-    expect(posixScript).toContain(
+      "trap 'rm -f \"$installer_path\"' EXIT",
       "curl -fsSL --connect-timeout 10 --max-time 120 -o \"$installer_path\" 'https://openclaw.ai/install.sh'",
-    );
-    expect(posixScript).toContain("bash -- \"$installer_path\" --version '2026.7.1' --no-onboard");
+      "bash -- \"$installer_path\" --version '2026.7.1' --no-onboard",
+    ]);
     expect(posixScript).not.toContain("| bash");
     expect(posixScript).toContain("set -euo pipefail");
   });
@@ -793,14 +792,11 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
       "# Changelog\n\n## 2026.9.1\n\n- Preserve source-owned inventory during candidate packaging.\n",
     );
     writeFileSync(join(sourceDir, "pnpm-workspace.yaml"), "nodeLinker: isolated\n");
-    writeFileSync(
-      join(sourceDir, "package.json"),
-      JSON.stringify({
-        name: "openclaw",
-        version: "2026.9.1",
-        bundleDependencies: ["fixture-runtime"],
-      }),
-    );
+    writeJson(join(sourceDir, "package.json"), {
+      name: "openclaw",
+      version: "2026.9.1",
+      bundleDependencies: ["fixture-runtime"],
+    });
     writeFileSync(helperPath, "export {};\n");
     const commands = vi
       .spyOn(candidateProcess, "runCommand")
@@ -809,7 +805,7 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
         if (args[0] === "rev-parse") {
           stdout = sourceSha;
         } else if (args[0] === helperPath) {
-          writeFileSync(inventoryPath, JSON.stringify(["dist/from-source-helper.js"]));
+          writeJson(inventoryPath, ["dist/from-source-helper.js"]);
           writeFileSync(candidateTgz, "fixture tarball");
           stdout = `${candidateTgz}\n`;
         } else if (args[0] === "pack") {
@@ -836,63 +832,45 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
   });
 
   it.each([
-    {
-      label: "stable predecessor",
-      baselineVersion: "2026.8.32",
-      candidateVersion: "2026.8.34",
-      timeoutSeconds: undefined,
-      expectedArgs: [
+    ["stable predecessor", "2026.8.32", undefined],
+    ["extended-stable predecessor and candidate", "2026.8.33", 1200],
+  ] as const)(
+    "routes packaged upgrades from the %s channel",
+    (_, baselineVersion, timeoutSeconds) => {
+      const candidateUrl = "http://127.0.0.1:49152/openclaw-current.tgz";
+      const extended = baselineVersion === "2026.8.33";
+      const updateCommand = buildPackagedUpgradeUpdateCommand({
+        env: {
+          NPM_CONFIG_REGISTRY: "http://127.0.0.1:49152",
+          FOO: "bar",
+          NODE_COMPILE_CACHE: "/tmp/stale-openclaw-cache",
+          OPENCLAW_DISABLE_BUNDLED_PLUGIN_POSTINSTALL: "1",
+        },
+        candidateUrl,
+        candidateVersion: "2026.8.34",
+        timeoutSeconds,
+        baselineVersion,
+      });
+      expect(updateCommand.args).toEqual([
         "update",
-        "--tag",
-        "http://127.0.0.1:49152/openclaw-current.tgz",
+        ...(extended ? [] : ["--tag", candidateUrl]),
         "--yes",
         "--json",
         "--no-restart",
         "--timeout",
-        process.platform === "win32" ? "600" : "1200",
-      ],
-      expectedPackageSpec: undefined,
-      expectedNpmTag: undefined,
-    },
-    {
-      label: "extended-stable predecessor and candidate",
-      baselineVersion: "2026.8.33",
-      candidateVersion: "2026.8.34",
-      timeoutSeconds: 1200,
-      expectedArgs: ["update", "--yes", "--json", "--no-restart", "--timeout", "1200"],
-      expectedPackageSpec: "openclaw",
-      expectedNpmTag: "extended-stable",
-    },
-  ])("routes packaged upgrades from the $label channel", (testCase) => {
-    const candidateUrl = "http://127.0.0.1:49152/openclaw-current.tgz";
-    const updateCommand = buildPackagedUpgradeUpdateCommand({
-      env: {
+        extended || process.platform !== "win32" ? "1200" : "600",
+      ]);
+      expect(updateCommand.env).toEqual({
         NPM_CONFIG_REGISTRY: "http://127.0.0.1:49152",
         FOO: "bar",
-        NODE_COMPILE_CACHE: "/tmp/stale-openclaw-cache",
-        OPENCLAW_DISABLE_BUNDLED_PLUGIN_POSTINSTALL: "1",
-      },
-      candidateUrl,
-      candidateVersion: testCase.candidateVersion,
-      timeoutSeconds: testCase.timeoutSeconds,
-      baselineVersion: testCase.baselineVersion,
-    });
-    expect(updateCommand.args).toEqual(testCase.expectedArgs);
-    expect(updateCommand.env.OPENCLAW_UPDATE_PACKAGE_SPEC).toBe(testCase.expectedPackageSpec);
-    expect(updateCommand.env.NPM_CONFIG_TAG).toBe(testCase.expectedNpmTag);
-    expect(updateCommand.env).toEqual({
-      NPM_CONFIG_REGISTRY: "http://127.0.0.1:49152",
-      FOO: "bar",
-      OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS: "1",
-      NODE_DISABLE_COMPILE_CACHE: "1",
-      ...(testCase.expectedPackageSpec
-        ? {
-            OPENCLAW_UPDATE_PACKAGE_SPEC: testCase.expectedPackageSpec,
-            NPM_CONFIG_TAG: testCase.expectedNpmTag,
-          }
-        : {}),
-    });
-  });
+        OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS: "1",
+        NODE_DISABLE_COMPILE_CACHE: "1",
+        ...(extended
+          ? { OPENCLAW_UPDATE_PACKAGE_SPEC: "openclaw", NPM_CONFIG_TAG: "extended-stable" }
+          : {}),
+      });
+    },
+  );
 
   it("uses forced shutdown only when the installed gateway supports it", () => {
     expect(buildGatewayStopArgsFromHelpText("--force  Skip confirmation")).toEqual([
@@ -944,27 +922,21 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
     const outputDir = join(root, "output");
     mkdirSync(join(sourceDir, "packages", "ai"), { recursive: true });
     mkdirSync(logsDir, { recursive: true });
-    writeFileSync(
-      join(sourceDir, "package.json"),
-      JSON.stringify({
-        name: "openclaw",
-        version: "2026.8.1",
-        dependencies: {
-          "@openclaw/ai": "workspace:*",
-          "partial-json": "0.1.8",
-        },
-      }),
-    );
-    writeFileSync(
-      join(sourceDir, "packages", "ai", "package.json"),
-      JSON.stringify({
-        name: "@openclaw/ai",
-        version: "2026.8.1",
-        dependencies: {
-          "partial-json": "0.1.7",
-        },
-      }),
-    );
+    writeJson(join(sourceDir, "package.json"), {
+      name: "openclaw",
+      version: "2026.8.1",
+      dependencies: {
+        "@openclaw/ai": "workspace:*",
+        "partial-json": "0.1.8",
+      },
+    });
+    writeJson(join(sourceDir, "packages", "ai", "package.json"), {
+      name: "@openclaw/ai",
+      version: "2026.8.1",
+      dependencies: {
+        "partial-json": "0.1.7",
+      },
+    });
     writeFileSync(
       join(sourceDir, "CHANGELOG.md"),
       "# Changelog\n\n## Unreleased\n\n- Validate source metadata before installing dependencies.\n",
@@ -1203,27 +1175,22 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
   });
 
   it("does not trust ambient ComSpec when wrapping Windows cmd shims", () => {
-    const originalComSpec = process.env.ComSpec;
-    const originalSystemRoot = process.env.SystemRoot;
+    const originalEnv = { ComSpec: process.env.ComSpec, SystemRoot: process.env.SystemRoot };
     try {
       process.env.ComSpec = String.raw`C:\Users\test\bin\cmd.exe`;
       process.env.SystemRoot = String.raw`D:\Windows`;
-
       expect(
         resolveCommandSpawnInvocation(String.raw`C:\Program Files\nodejs\npm.cmd`, ["--version"], {
           platform: "win32",
         }).command,
       ).toBe(String.raw`D:\Windows\System32\cmd.exe`);
     } finally {
-      if (originalComSpec === undefined) {
-        delete process.env.ComSpec;
-      } else {
-        process.env.ComSpec = originalComSpec;
-      }
-      if (originalSystemRoot === undefined) {
-        delete process.env.SystemRoot;
-      } else {
-        process.env.SystemRoot = originalSystemRoot;
+      for (const [key, value] of Object.entries(originalEnv)) {
+        if (value === undefined) {
+          delete process.env[key];
+        } else {
+          process.env[key] = value;
+        }
       }
     }
   });
@@ -1481,7 +1448,7 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
     const cliDir = join(homeDir, ".local", "bin");
     mkdirSync(distDir, { recursive: true });
     mkdirSync(cliDir, { recursive: true });
-    writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "openclaw" }));
+    writeJson(join(packageRoot, "package.json"), { name: "openclaw" });
     writeFileSync(join(distDir, "entry.js"), "#!/usr/bin/env node\n");
 
     expect(
@@ -1716,24 +1683,15 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
   });
 
   it("skips the packaged upgrade status probe after the Windows fallback install", () => {
-    expect(
-      shouldRunPackagedUpgradeStatusProbe({
-        platform: "win32",
-        usedWindowsPackagedUpgradeFallback: true,
-      }),
-    ).toBe(false);
-    expect(
-      shouldRunPackagedUpgradeStatusProbe({
-        platform: "win32",
-        usedWindowsPackagedUpgradeFallback: false,
-      }),
-    ).toBe(true);
-    expect(
-      shouldRunPackagedUpgradeStatusProbe({
-        platform: "linux",
-        usedWindowsPackagedUpgradeFallback: true,
-      }),
-    ).toBe(true);
+    for (const [platform, usedWindowsPackagedUpgradeFallback, expected] of [
+      ["win32", true, false],
+      ["win32", false, true],
+      ["linux", true, true],
+    ] as const) {
+      expect(
+        shouldRunPackagedUpgradeStatusProbe({ platform, usedWindowsPackagedUpgradeFallback }),
+      ).toBe(expected);
+    }
   });
 
   it.each([
@@ -1761,24 +1719,22 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
   });
 
   it("verifies the Windows packaged-upgrade fallback installed the candidate", () => {
-    expect(() =>
-      verifyWindowsPackagedUpgradeFallbackInstall({
-        installedVersion: "2026.5.4-beta.1",
-        candidateVersion: "2026.5.4-beta.1",
-      }),
-    ).not.toThrow();
-    expect(() =>
-      verifyWindowsPackagedUpgradeFallbackInstall({
-        installedVersion: "2026.5.3",
-        candidateVersion: "2026.5.4-beta.1",
-      }),
-    ).toThrow(/expected 2026\.5\.4-beta\.1/u);
-    expect(() =>
-      verifyWindowsPackagedUpgradeFallbackInstall({
-        installedVersion: "",
-        candidateVersion: "2026.5.4-beta.1",
-      }),
-    ).toThrow(/installed unknown/u);
+    for (const [installedVersion, error] of [
+      ["2026.5.4-beta.1", undefined],
+      ["2026.5.3", /expected 2026\.5\.4-beta\.1/u],
+      ["", /installed unknown/u],
+    ] as const) {
+      const verify = () =>
+        verifyWindowsPackagedUpgradeFallbackInstall({
+          installedVersion,
+          candidateVersion: "2026.5.4-beta.1",
+        });
+      if (error) {
+        expect(verify).toThrow(error);
+      } else {
+        expect(verify).not.toThrow();
+      }
+    }
   });
 
   it("only treats pinned baseline specs as exact installer version assertions", () => {
@@ -1795,30 +1751,22 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
         ? join(prefixDir, "node_modules", "openclaw")
         : join(prefixDir, "lib", "node_modules", "openclaw");
     mkdirSync(packageRoot, { recursive: true });
-    writeFileSync(
-      join(packageRoot, "package.json"),
-      JSON.stringify({
-        name: "openclaw",
-        version: "2026.4.10",
-      }),
-      "utf8",
-    );
+    writeJson(join(packageRoot, "package.json"), {
+      name: "openclaw",
+      version: "2026.4.10",
+    });
 
     expect(readInstalledVersion(prefixDir)).toBe("2026.4.10");
   });
 
   it("treats missing package scripts as optional in older refs", () => {
     const packageRoot = tempDirs.make("openclaw-cross-os-scripts-");
-    writeFileSync(
-      join(packageRoot, "package.json"),
-      JSON.stringify({
-        name: "openclaw",
-        scripts: {
-          build: "pnpm build",
-        },
-      }),
-      "utf8",
-    );
+    writeJson(join(packageRoot, "package.json"), {
+      name: "openclaw",
+      scripts: {
+        build: "pnpm build",
+      },
+    });
 
     expect(packageHasScript(packageRoot, "build")).toBe(true);
     expect(packageHasScript(packageRoot, "ui:build")).toBe(false);

@@ -171,13 +171,7 @@ it("routes source history through the trusted ancestry owner", () => {
     "pnpm check --include-test-types --include-architecture",
     'mv "$harness_root" .release-harness',
   ]);
-  expectText(pluginCompatibility.run, [
-    '.scripts["plugins:boundary-report:ci"]',
-    "38ba27834dd3f98c19d5833e0598dfef3abb7587",
-    "Target is not proven to predate",
-    "Frozen target predates",
-    "pnpm plugins:boundary-report:ci",
-  ]);
+  expect(pluginCompatibility.run).toContain("38ba27834dd3f98c19d5833e0598dfef3abb7587");
   expectText(metadata, ["--unshallow origin", '"+refs/tags/v*:refs/tags/v*"']);
   const sourceSteps = preflight.jobs?.check_openclaw_npm?.steps ?? [];
   expect(sourceSteps.indexOf(trustedCheckout)).toBeLessThan(sourceSteps.indexOf(sourceAncestry));

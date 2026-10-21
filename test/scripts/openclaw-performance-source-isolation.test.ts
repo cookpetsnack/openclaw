@@ -262,7 +262,9 @@ exit "$status"
       `dist/entry.js\ngateway\nhealth\n--port\n${gatewayPort}\n`,
     );
     expect(readCapture("benchmark.argv")).toContain(
-      "--import\ntsx\n/fixture/helpers/scripts/bench-cli-startup.ts\n",
+      "--import\ntsx\n/fixture/helpers/scripts/bench-cli-startup.ts\n" +
+        "--entry\n/fixture/workspace/openclaw.mjs\n" +
+        "--case\ngatewayHealthJsonWarmState\n--case\ngatewayHealthJsonFreshState\n",
     );
     expect(readCapture("gateway.terminated")).toBe("terminated\n");
     expect([gatewayPaths.home, healthPaths.home].map(existsSync)).toEqual([false, false]);
