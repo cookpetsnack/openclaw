@@ -1,5 +1,5 @@
 import { toErrorObject } from "@openclaw/normalization-core";
-import { createEffect, onCleanup } from "solid-js";
+import { createEffect, onSettled } from "solid-js";
 import { nativeGatewaysCapability } from "../../../app/native-gateways.runtime.ts";
 import {
   isStaleChunkImportError,
@@ -717,7 +717,7 @@ function DetailPanel(props: ChatDetailPanelProps, host: ChatDetailPanel) {
       });
     },
   );
-  onCleanup(() => {
+  onSettled(() => () => {
     unregisterRetirement();
     disposed = true;
     draftListener?.(null);
