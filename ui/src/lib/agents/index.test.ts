@@ -12,9 +12,9 @@ import {
   loadToolsCatalog,
   loadToolsEffective,
   refreshVisibleToolsEffectiveForCurrentSession,
-  setDefaultAgent,
 } from "./index.ts";
 import type { AgentsState } from "./index.ts";
+import { setDefaultAgent } from "./mutations.ts";
 
 type AgentsConfigCapability = Parameters<typeof setDefaultAgent>[0];
 
