@@ -12,6 +12,7 @@ import {
 } from "../providers/openai-responses-message-text.js";
 import { resolveResponsesMessageSnapshotCollapse } from "../providers/openai-responses-stream-compat.js";
 import {
+  applyResponsesCacheWritePricing,
   mapResponsesTerminalUsage,
   readResponsesReasoningTokens,
   resolveResponsesTerminalStopReason,
@@ -64,6 +65,7 @@ type TerminalOutput = AssistantMessage & {
 type TerminalOptions = Pick<
   ResponsesStreamOptions,
   | "serviceTier"
+  | "promptCacheTtl"
   | "onServiceTier"
   | "resolveServiceTier"
   | "applyServiceTierPricing"
@@ -399,6 +401,7 @@ export function createResponsesTerminalController(params: {
       output.usage.usageReport = { state: "unavailable" };
     }
     calculateCost(model, output.usage);
+    applyResponsesCacheWritePricing(output.usage, response.usage, options?.promptCacheTtl);
     if (options?.applyServiceTierPricing) {
       const tier = options.resolveServiceTier
         ? options.resolveServiceTier(response.service_tier, options.serviceTier)

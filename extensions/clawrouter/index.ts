@@ -1,6 +1,7 @@
 import { Buffer } from "node:buffer";
 import { createHash } from "node:crypto";
 import type { StreamFn } from "openclaw/plugin-sdk/agent-core";
+import { ModelInferenceCapabilitiesSchema } from "openclaw/plugin-sdk/decisions";
 import { withTrustedEnvProxyGuardedFetchMode } from "openclaw/plugin-sdk/fetch-runtime";
 import type {
   ProviderDefaultThinkingPolicyContext,
@@ -34,6 +35,7 @@ import {
   normalizeFastMode,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { containsAsciiControlCharacter } from "openclaw/plugin-sdk/string-normalization-runtime";
+import { buildClawRouterDecisionProvider } from "./decision-provider.js";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
 import { parseClawRouterPool, type ClawRouterPoolResult } from "./pool.js";
 import {
@@ -51,12 +53,19 @@ import {
   resolveNativeWebSearch,
   resolveServiceTiers,
 } from "./provider-policy-api.js";
+import { buildClawRouterSpeechProvider } from "./speech-provider.js";
 import { fetchClawRouterUsage } from "./usage.js";
 
 const PERPLEXITY_UNSUPPORTED_SCHEMA_KEYWORDS = new Set([
   "patternProperties",
   "additionalProperties",
 ]);
+
+const decisionCapabilities = ModelInferenceCapabilitiesSchema.parse(
+  manifest.modelCatalog.providers.clawrouter.models.find(
+    (model) => model.id === "openai/gpt-6-luna",
+  )?.inference,
+);
 
 const ENV_API_KEY_MARKER = "CLAWROUTER_API_KEY";
 const ATTRIBUTION_VALUE_MAX_LENGTH = 256;
@@ -416,6 +425,8 @@ export default defineSingleProviderPluginEntry({
   description: "Managed multi-provider model routing and quotas",
   manifest,
   register(api) {
+    api.registerSpeechProvider(buildClawRouterSpeechProvider);
+    api.registerDecisionProvider(buildClawRouterDecisionProvider());
     api.registerGatewayMethod(
       "clawrouter.pool.get",
       async (request) => {
@@ -561,6 +572,19 @@ export default defineSingleProviderPluginEntry({
           };
         },
       },
+      // This is protocol support, not a key grant. The decision executor checks the
+      // selected credential's catalog before using its native route.
+      augmentModelCatalog: ({ entries }) =>
+        entries.map((entry) =>
+          entry.provider === PROVIDER_ID &&
+          entry.id === "openai/gpt-6-luna" &&
+          entry.api === "openai-responses"
+            ? {
+                ...entry,
+                inference: { ...decisionCapabilities, chat: entry.inference?.chat ?? true },
+              }
+            : entry,
+        ),
       // Live catalog routing also applies to explicitly configured model rows.
       preferRuntimeResolvedModel: () => true,
       prepareDynamicModel: async (ctx) => {
