@@ -241,6 +241,8 @@ suite.define(() => {
                   name: `Molty (agent:${agentId})`,
                   exact: true,
                 });
+                // Usage rows can arrive before agents.list supplies their owner labels.
+                await chip.waitFor({ state: "visible" });
                 await expect.poll(() => chip.getAttribute("data-agent-id")).toBe(agentId);
                 await expect.poll(() => ownerRow.locator(".agent-row-chip").count()).toBe(1);
               }
