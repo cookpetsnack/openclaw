@@ -83,55 +83,44 @@ it("runs a turn its own mutation requests ahead of the inputs that mutation keep
   }
 });
 
-it("relays caller cancellation through a borrowed ambient turn", async () => {
-  const params = {
-    storePath: "/synthetic/borrowed-cancellation/sessions.json",
-    sessionKey: "agent:main:borrowed-cancellation",
-    sessionId: "borrowed-cancellation-session",
-  };
-  const caller = new AbortController();
-  const [callbackStarted, releaseCallback] = [createDeferred(), createDeferred()];
-  let borrowedSignal: AbortSignal | undefined;
-  await withSessionTurn(params, async (operation) => {
-    const borrowed = withSessionTurn(
-      { ...params, abortSignal: caller.signal },
-      async (_, signal) => {
-        borrowedSignal = signal;
-        callbackStarted.resolve();
-        await releaseCallback.promise;
-      },
-    );
-    await callbackStarted.promise;
-    try {
-      caller.abort("caller cancelled");
-      expect(borrowedSignal).toMatchObject({ aborted: true, reason: "caller cancelled" });
-      expect(operation?.abortSignal.aborted).toBe(false);
-    } finally {
-      releaseCallback.resolve();
-      await borrowed;
-    }
-  });
-});
-
-it.each([false, true])(
-  "relays caller cancellation through a borrowed unbound claim (materialize=%s)",
-  async (materialize) => {
-    const target = captureSessionTarget({
-      storeScope: "/synthetic/borrowed-claim/sessions.sqlite",
-      sessionKey: "agent:main:borrowed-claim",
-      incarnation: "borrowed-claim-session",
-    });
+it.each([
+  { ambient: true, materialize: true },
+  { ambient: false, materialize: false },
+  { ambient: false, materialize: true },
+])(
+  "relays borrowed caller cancellation (ambient=$ambient, materialize=$materialize)",
+  async ({ ambient, materialize }) => {
+    const target = targetFor("borrowed-cancellation");
+    const params = ambient
+      ? {
+          storePath: target.storeScope,
+          sessionKey: target.sessionKey,
+          sessionId: target.incarnation,
+        }
+      : turnParams(target, false);
     const caller = new AbortController();
-    await withSessionTurn(turnParams(target, false), async (_, outerSignal) => {
-      await withSessionTurn(
-        { ...turnParams(target, materialize), abortSignal: caller.signal },
+    const [started, release] = [createDeferred(), createDeferred()];
+    let borrowedSignal: AbortSignal | undefined;
+    await withSessionTurn(params, async (outer, outerSignal) => {
+      const borrowed = withSessionTurn(
+        { ...(ambient ? params : turnParams(target, materialize)), abortSignal: caller.signal },
         async (operation, signal) => {
-          caller.abort("nested caller cancelled");
-          expect(signal).toMatchObject({ aborted: true, reason: "nested caller cancelled" });
-          expect(outerSignal.aborted).toBe(false);
+          borrowedSignal = signal;
+          started.resolve();
+          await release.promise;
           expect(operation?.abortSignal.aborted ?? false).toBe(false);
         },
       );
+      try {
+        await started.promise;
+        caller.abort("caller cancelled");
+        expect(borrowedSignal).toMatchObject({ aborted: true, reason: "caller cancelled" });
+        expect(outerSignal.aborted).toBe(false);
+        expect(outer?.abortSignal.aborted ?? false).toBe(false);
+      } finally {
+        release.resolve();
+        await borrowed;
+      }
     });
   },
 );

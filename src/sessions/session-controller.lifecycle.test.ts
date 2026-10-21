@@ -427,41 +427,23 @@ it("cancels queued inputs independently of abort-if-abortable active policy", as
   }
 });
 
-it("does not run a preemptive mutation after its caller aborts during source cleanup", async () => {
-  const target = targetFixture("mutation-cleanup-cancellation");
-  const cleanup = pause();
-  const input = reserveSource(target, {
-    adapter: { onSettled: cleanup.run },
-  });
-  const caller = new AbortController();
-  const reason = new Error("mutation caller cancelled during cleanup");
-  const run = vi.fn(async () => {});
-  const mutation = mutate({ target, kind: "reset", ...abortAndCancel, signal: caller.signal, run });
-  const rejected = expect(mutation).rejects.toBe(reason);
-  try {
-    await cleanup.started;
-    expect(run).not.toHaveBeenCalled();
-    caller.abort(reason);
-    cleanup.finish();
-    await rejected;
-    await input.settlement.promise;
-    expect(run).not.toHaveBeenCalled();
-  } finally {
-    cleanup.finish();
-    retire(input);
-    await Promise.allSettled([input.settlement.promise, mutation]);
-  }
-});
-
-it.each(["caller", "authority"] as const)(
-  "rechecks %s cancellation after preparation before interrupting effects",
-  async (invalidation) => {
-    const target = targetFixture(`mutation-${invalidation}-authority`);
+it.each([
+  { stage: "cleanup", invalidation: "caller" },
+  { stage: "preparation", invalidation: "caller" },
+  { stage: "preparation", invalidation: "authority" },
+] as const)(
+  "rechecks $invalidation cancellation after $stage before mutation effects",
+  async ({ stage, invalidation }) => {
+    const target = targetFixture(`mutation-${stage}-${invalidation}`);
     const onInterrupt = vi.fn();
-    const effect = await beginEffect({ target, onInterrupt });
-    const preparation = pause();
+    const effect = stage === "preparation" ? await beginEffect({ target, onInterrupt }) : undefined;
+    const pending = pause();
+    const input =
+      stage === "cleanup"
+        ? reserveSource(target, { adapter: { onSettled: pending.run } })
+        : undefined;
     const caller = new AbortController();
-    const reason = new Error("mutation authority revoked during preparation");
+    const reason = new Error("mutation authority revoked while awaiting work");
     let current = true;
     const run = vi.fn(async () => {});
     const mutation = mutate({
@@ -474,26 +456,33 @@ it.each(["caller", "authority"] as const)(
           throw reason;
         }
       },
-      prepare: preparation.run,
+      prepare: stage === "preparation" ? pending.run : undefined,
       run,
     });
     const rejected = expect(mutation).rejects.toBe(reason);
     try {
-      await preparation.started;
+      await pending.started;
+      expect(run).not.toHaveBeenCalled();
       if (invalidation === "caller") {
         caller.abort(reason);
       } else {
         current = false;
       }
-      preparation.finish();
+      pending.finish();
       await rejected;
       expect(onInterrupt).not.toHaveBeenCalled();
-      expect(effect.isActive()).toBe(true);
+      if (effect) {
+        expect(effect.isActive()).toBe(true);
+      }
+      await input?.settlement.promise;
       expect(run).not.toHaveBeenCalled();
     } finally {
-      preparation.finish();
-      effect.release();
-      await Promise.allSettled([mutation]);
+      pending.finish();
+      effect?.release();
+      if (input) {
+        retire(input);
+      }
+      await Promise.allSettled([mutation, input?.settlement.promise]);
     }
   },
 );

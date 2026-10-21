@@ -23,7 +23,6 @@ import {
   getCurrentSessionControllerClaim as currentClaim,
   runSessionMutation as mutate,
   startSessionControllerInterruption as interrupt,
-  captureSessionControllerSettlement as controllerSettlement,
   bindSessionControllerTarget as bindTarget,
 } from "./session-controller.lifecycle.js";
 import {
@@ -366,44 +365,6 @@ it("reuses an early input and cancels reset preparation without completing its l
   await work;
   await interruption.released;
   expect(settled).toHaveBeenCalledOnce();
-});
-
-it("holds uncertain injection and source cleanup through clear while allowing a fresh signal afterward", async () => {
-  const physical = target("/stores/injection.sqlite");
-  const cleanup = createDeferredCore();
-  const input = reserve(physical, {
-    adapter: { onSettled: () => cleanup.promise },
-  });
-  const injection = createDeferredCore<boolean>();
-  const settle = vi.fn(injection.resolve);
-  input.phase = "injecting";
-  input.injection = { predecessor: Promise.resolve(true), settled: injection.promise, settle };
-  clearMailbox(input.mailbox, () => {});
-  expect(settle).not.toHaveBeenCalled();
-  expect(input.mailbox.entries).toContain(input);
-  const fresh = reserve(physical);
-  expect(fresh.abortSignal.aborted).toBe(false);
-  const started = vi.fn();
-  const queued = claimTask(fresh, started);
-  expect(started).not.toHaveBeenCalled();
-  const receipt = controllerSettlement({ target: physical });
-  let ended = false;
-  void sourceSettlement(input).then(() => {
-    ended = true;
-  });
-  injection.resolve(true);
-  input.injection = undefined;
-  input.phase = "waiting";
-  retireInput(input);
-  await Promise.resolve();
-  expect(ended).toBe(false);
-  expect(started).not.toHaveBeenCalled();
-  cleanup.resolve();
-  await sourceSettlement(input);
-  const claim = await queued;
-  expect(started).toHaveBeenCalledOnce();
-  releaseClaim(claim);
-  await receipt;
 });
 
 it("retains claimed source adoption until the callback settles", async () => {

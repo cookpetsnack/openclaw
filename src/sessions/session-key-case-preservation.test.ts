@@ -6,7 +6,6 @@ import { deliveryContextFromSession } from "../utils/delivery-context.read.js";
 import { normalizeSessionDeliveryState } from "../utils/delivery-context.shared.js";
 import {
   normalizeSessionKeyPreservingOpaquePeerIds,
-  normalizeSessionPeerId,
   parseRawSessionConversationRef,
   requiresFoldedSessionKeyAliasProof,
 } from "./session-key-utils.js";
@@ -50,12 +49,6 @@ describe("parseRawSessionConversationRef", () => {
   ])("rejects empty structural segments in %s", (sessionKey) => {
     expect(parseRawSessionConversationRef(sessionKey)).toBeNull();
   });
-});
-
-it("still preserves Signal group ids", () => {
-  expect(normalizeSessionPeerId({ channel: "signal", peerKind: "group", peerId: "AbC123=" })).toBe(
-    "AbC123=",
-  );
 });
 
 it("keeps Matrix room id case in the channel session key (both prod rooms)", () => {

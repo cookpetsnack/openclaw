@@ -303,20 +303,14 @@ describe("operation-owned watchdog through controller admission", () => {
     watchdog.close();
   });
 
-  it("stops a silent run without diagnostics, inbound traffic or a backlog", async () => {
+  it("runs its timer without diagnostics and ignores non-semantic inbound activity", async () => {
     const { operation, cancel } = running();
-    vi.setSystemTime(abortMs - 1);
+    await vi.advanceTimersByTimeAsync(abortMs - 1);
     operation.recordActivity(); // A source arrival is not semantic progress.
     expect(operation.watchdog.decide().action).toBe("warn");
-    await tickAt(operation.watchdog, abortMs);
+    await vi.advanceTimersByTimeAsync(1_001);
     expectStalled(operation, cancel);
     expect(getSessionControllerOperation(key)).toBeUndefined();
-  });
-
-  it("runs its timer with diagnostic logging disabled", async () => {
-    const { operation, cancel } = running();
-    await vi.advanceTimersByTimeAsync(abortMs + 1_000);
-    expectStalled(operation, cancel);
   });
 
   it.each(["global_capacity", "deferred_maintenance", "human_question", "runtime_owned"] as const)(
@@ -574,7 +568,6 @@ describe("operation-owned watchdog through controller admission", () => {
       await operation.ownerSettlement;
     },
   );
-
   it("keeps the rekeyed after-clear watchdog live until its actual completion barrier", async () => {
     const operation = createReplyOperation({ sessionKey: key, sessionId, resetTriggered: false });
     operation.updateSessionKey(key + ":adopted");

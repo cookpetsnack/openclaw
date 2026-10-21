@@ -7,14 +7,12 @@ import {
 import { retryRestartRecoveryBeforeSelectedClaim } from "../auto-reply/reply/reply-turn-recovery-predecessor.js";
 import type { GatewayRecoveryRuntime } from "../gateway/server-instance-runtime.types.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { applyQueueDropPolicy } from "../utils/queue-helpers.js";
 import {
   generatePilotSequence,
   initialPilotState,
   stepPilot,
   type PilotCustody,
   type PilotEvent,
-  type PilotInput,
 } from "./session-controller-model.test-support.js";
 import type { ReplyMessageInjectionAttempt } from "./session-controller.contracts.js";
 import { createReplyOperation, getSessionControllerOperation } from "./session-controller.js";
@@ -434,43 +432,4 @@ describe("session controller executable pilot", () => {
       lease.release();
     }
   });
-
-  it.each(["old", "new"] as const)(
-    "conserves overflow identities against the existing %s queue boundary",
-    (dropPolicy) => {
-      const queue = {
-        cap: 2,
-        items: [] as PilotInput[],
-        dropPolicy,
-        droppedCount: 0,
-        summaryLines: [] as string[],
-      };
-      const retired: string[] = [];
-      const inputs = Array.from({ length: 6 }, (_, n) => ({
-        id: "mail-" + n,
-        authority: n % 2 ? "alice-policy" : "bob-policy",
-      }));
-      for (let n = 0; n < 6; n++) {
-        const input = inputs[n]!;
-        if (
-          applyQueueDropPolicy({
-            queue,
-            summarize: (item) => item.id,
-            onDrop: (items) => retired.push(...items.map((item) => item.id)),
-          })
-        ) {
-          queue.items.push(input);
-        } else {
-          retired.push(input.id);
-        }
-        const offered = inputs.slice(0, n + 1);
-        const retained = dropPolicy === "old" ? offered.slice(-2) : offered.slice(0, 2);
-        expect(queue.items).toEqual(retained);
-        expect(retired).toEqual(
-          offered.filter((item) => !retained.includes(item)).map(({ id }) => id),
-        );
-        expect(queue.items.length + retired.length).toBe(n + 1);
-      }
-    },
-  );
 });

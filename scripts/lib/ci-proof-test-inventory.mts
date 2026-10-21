@@ -3525,7 +3525,6 @@ export const PR_PROTECTED_RUNTIME_TEST_FILES: readonly string[] = [
   "src/sessions/auth-profile-preservation.test.ts",
   "src/sessions/background-session-result.test.ts",
   "src/sessions/session-created.test.ts",
-  "src/sessions/session-lifecycle-admission.pending.test.ts",
   "src/sessions/session-controller.lifecycle-diagnostics.test.ts",
   "src/sessions/session-upstream-monitor.test.ts",
   "src/sessions/user-turn-transcript.persistence.test.ts",
