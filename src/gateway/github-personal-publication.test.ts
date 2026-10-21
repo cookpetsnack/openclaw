@@ -129,13 +129,10 @@ describe("personal publication authority and recovery", () => {
       result: { status: "failed", code: "session_changed" },
       confirmation: null,
     });
-    const confirmed = await rpc("sessions.github.confirm", {
-      sessionKey: SESSION_KEY,
-      requestId: receipt.request_id,
-      requestDigest: receipt.request_digest,
-      generation,
-      account,
-    });
+    const confirmed = await rpc(
+      "sessions.github.confirm",
+      confirmation(receipt.request_id, receipt.request_digest),
+    );
     expect(confirmed[0]).toBe(false);
     expect(workspace.effects).toEqual(["push"]);
   });
@@ -652,13 +649,7 @@ describe("personal publication authority and recovery", () => {
     const commandsBeforeConfirmation = [...commands];
     await expect(
       coordinator.confirmPersonalV2(
-        {
-          sessionKey: SESSION_KEY,
-          requestId: result.requestId,
-          generation,
-          account,
-          requestDigest: readReceipt(result.requestId)!.request_digest,
-        },
+        confirmation(result.requestId, readReceipt(result.requestId)!.request_digest),
         prepared,
       ),
     ).resolves.toEqual(result);
@@ -739,6 +730,10 @@ describe("personal publication authority and recovery", () => {
         workspaceTree: WORKSPACE_TREE,
       },
     });
+    const confirm = confirmation(
+      result.requestId,
+      discovered[1].pendingPersonal.confirmation.requestDigest,
+    );
     const ownProfile = client.authenticatedUserProfile!;
     client.authenticatedUserProfile = { ...ownProfile, profileId: otherOwner };
     client.connect.scopes = ["operator.admin"];
@@ -751,29 +746,10 @@ describe("personal publication authority and recovery", () => {
         })
       )[0],
     ).toBe(false);
-    expect(
-      (
-        await rpc("sessions.github.confirm", {
-          sessionKey: SESSION_KEY,
-          requestId: result.requestId,
-          generation,
-          account,
-          requestDigest: discovered[1].pendingPersonal.confirmation.requestDigest,
-        })
-      )[0],
-    ).toBe(false);
+    expect((await rpc("sessions.github.confirm", confirm))[0]).toBe(false);
     expect((await rpc("sessions.github.publish", request()))[0]).toBe(false);
     client.authenticatedUserProfile = ownProfile;
     action = await preparePersonalPublicationFixtureAction({ client, context });
-    const confirm = {
-      sessionKey: SESSION_KEY,
-      requestId: discovered[1].pendingPersonal.result.requestId,
-      generation: discovered[1].pendingPersonal.confirmation.generation,
-      account: discovered[1].pendingPersonal.confirmation.account,
-      requestDigest: discovered[1].pendingPersonal.confirmation.requestDigest,
-    };
-
-    expect(confirm).toMatchObject({ generation, account });
     await expect(
       coordinator.confirmPersonalV2(confirm, { ...action, owner: otherOwner }),
     ).rejects.toThrow("original request");

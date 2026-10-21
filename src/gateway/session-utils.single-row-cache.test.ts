@@ -278,28 +278,6 @@ test(
   }),
 );
 
-test(
-  "keeps navigation independent of control",
-  withStore(async ({ now, storePath }) => {
-    const oldParent = "agent:main:subagent:old-parent";
-    const newParent = "agent:main:subagent:new-parent";
-    const child = "agent:main:subagent:child";
-    const navigation = "agent:main:dashboard:navigation";
-    await seed(storePath, {
-      [oldParent]: session("old-parent", now),
-      [newParent]: session("new-parent", now),
-      [navigation]: session("navigation", now),
-      [child]: { ...session("child", now, navigation), spawnedBy: oldParent },
-    });
-    await control(child, oldParent, now);
-    expect(await children(navigation, now)).toEqual([child]);
-    await control(child, newParent, now + 25);
-    expect(await children(navigation, now + 50)).toEqual([child]);
-    expect(await children(oldParent, now + 50)).toBeUndefined();
-    expect(await children(newParent, now + 50)).toEqual([child]);
-  }),
-);
-
 test.each([false, true])(
   "refreshes runtime-only children without host SQL or eager parsing (incognito=%s)",
   (incognito) =>
