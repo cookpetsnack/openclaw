@@ -51,7 +51,9 @@ vi.mock("../infra/device-pairing-worker.js", async (importOriginal) => ({
   withCurrentDevicePairingSnapshot: (async (_stateDir, prepare, preparePublication) => {
     await mocks.preparePairing();
     const paired = mocks.pairing().paired;
-    await preparePublication?.();
+    if (preparePublication) {
+      await preparePublication();
+    }
     return prepare(paired)?.start();
   }) satisfies typeof import("../infra/device-pairing-worker.js").withCurrentDevicePairingSnapshot,
 }));

@@ -28,7 +28,6 @@ import { closeOpenClawStateDatabaseAsync } from "../state/openclaw-state-db.js";
 import { resolveOpenClawStateSqlitePath } from "../state/openclaw-state-db.paths.js";
 import { withStateMigrationBackupForTest } from "../state/openclaw-state-schema.test-support.js";
 import { getUserPreferences } from "../state/user-preferences.test-support.js";
-import { captureEnv } from "../test-utils/env.js";
 import {
   listConfigCorpusFixtureNames,
   readConfigCorpusFixture,
@@ -143,7 +142,7 @@ function assertDatabaseIntegrity(stateDir: string, fixture: StateFixture) {
 
 export function createStateStartupCorpusFixture() {
   const lifetime = createFixtureLifetime();
-  let originalEnv: ReturnType<typeof captureEnv> | undefined;
+  const originalEnv = new Map<string, string | undefined>();
   let cleanupReceipt: Promise<void> | undefined;
   const corpusFixture = {
     runCase(release: string, configName: string, signal: AbortSignal): Promise<void> {
@@ -168,8 +167,12 @@ export function createStateStartupCorpusFixture() {
             const { configPath, fixture, env } = prepareState(home, release, configName);
             // Vitest may start teardown before this timed-out body settles. The fixture
             // owns these values until database and worker cleanup have both joined.
-            originalEnv ??= captureEnv(Object.keys(env));
-            Object.assign(process.env, env);
+            for (const [key, value] of Object.entries(env)) {
+              if (!originalEnv.has(key)) {
+                originalEnv.set(key, process.env[key]);
+              }
+              process.env[key] = value;
+            }
             const io = createConfigIO({
               configPath,
               env: process.env,
@@ -322,8 +325,14 @@ export function createStateStartupCorpusFixture() {
       // Retain that receipt so another hook or case cannot certify the lost join.
       return (cleanupReceipt ??= lifetime.cleanup().then(() => {
         clearRuntimeConfigSnapshot();
-        originalEnv?.restore();
-        originalEnv = undefined;
+        for (const [key, value] of originalEnv) {
+          if (value === undefined) {
+            delete process.env[key];
+          } else {
+            process.env[key] = value;
+          }
+        }
+        originalEnv.clear();
         cleanupReceipt = undefined;
       }));
     },

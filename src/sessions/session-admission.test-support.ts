@@ -42,21 +42,21 @@ export function installAdmissionFixtures() {
     ]);
   });
   return {
-    track<T>(pending: Promise<T>) {
+    track: <T>(pending: Promise<T>) => {
       mutations.push(pending);
       return pending;
     },
-    gate() {
+    gate: () => {
       const barrier = admissionGate();
       gates.push(barrier);
       return barrier;
     },
-    admit(params: Parameters<typeof admitSession>[0]) {
+    admit: (params: Parameters<typeof admitSession>[0]) => {
       const pending = admitSession(params);
       admissions.push(pending);
       return pending;
     },
-    mutate<T>(params: Parameters<typeof runSessionMutation<T>>[0]) {
+    mutate: <T>(params: Parameters<typeof runSessionMutation<T>>[0]) => {
       const pending = runSessionMutation(params);
       mutations.push(pending);
       return pending;

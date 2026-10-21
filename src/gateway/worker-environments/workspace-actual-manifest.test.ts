@@ -1,4 +1,5 @@
 import { createHook } from "node:async_hooks";
+import { createHash } from "node:crypto";
 import { addAbortListener } from "node:events";
 import fs from "node:fs/promises";
 import path from "node:path";

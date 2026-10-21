@@ -351,7 +351,7 @@ describe("config plugin validation", () => {
     const expectCodexRequirement = (
       config: Record<string, unknown>,
       warns = true,
-      env = suiteEnv(),
+      env: NodeJS.ProcessEnv = suiteEnv(),
     ) => {
       const result = validateMissingCodex(config, env);
       expect(result.ok).toBe(true);

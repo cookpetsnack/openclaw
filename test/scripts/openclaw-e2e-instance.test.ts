@@ -1,4 +1,10 @@
-import { execFileSync, spawn, spawnSync, type ChildProcess } from "node:child_process";
+import {
+  execFileSync,
+  spawn,
+  spawnSync,
+  type ChildProcess,
+  type SpawnSyncReturns,
+} from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -188,7 +194,7 @@ function runBash(
   timeout?: number,
   separator = "\n",
   input?: string,
-): ReturnType<typeof spawnSync> {
+): SpawnSyncReturns<string> {
   return spawnSync("/bin/bash", ["-c", Array.isArray(script) ? script.join(separator) : script], {
     encoding: "utf8",
     env: env === undefined ? undefined : shellTestEnv(env),
@@ -203,7 +209,7 @@ function runBashWithHelper(
   timeout?: number,
   separator = "\n",
   input?: string,
-): ReturnType<typeof spawnSync> {
+): SpawnSyncReturns<string> {
   return runBash(
     ["set -euo pipefail", `source ${shellQuote(helperPath)}`, ...lines],
     env,
@@ -216,7 +222,7 @@ function runBashWithHelper(
 function runSourcedHelper(
   script: string,
   overrides: Record<string, string | undefined> | null = {},
-): ReturnType<typeof spawnSync> {
+): SpawnSyncReturns<string> {
   return spawnSync(
     "bash",
     ["-lc", ["set -euo pipefail", `source ${shellQuote(helperPath)}`, script].join("; ")],
@@ -290,7 +296,7 @@ function createPackageInstallFixture(
 function runPackageInstall(
   fixture: ReturnType<typeof createPackageInstallFixture>,
   env: Record<string, string | undefined> = {},
-): ReturnType<typeof spawnSync> {
+): SpawnSyncReturns<string> {
   return runBashWithHelper(
     [
       `openclaw_e2e_install_package ${shellQuote(fixture.logPath)} ${shellQuote("fixture package")} ${shellQuote(fixture.prefixPath)}`,

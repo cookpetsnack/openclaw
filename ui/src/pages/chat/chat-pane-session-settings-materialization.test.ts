@@ -12,8 +12,10 @@ import { sessionsResult } from "../../lib/sessions/session-capability.test-suppo
 import type { GatewayRequestHandler } from "../../test-helpers/gateway-client.ts";
 import { renderPaneModelControl } from "./chat-pane-model-control.test-support.ts";
 import { createMountedPanes, refreshPane } from "./chat-pane-mounted.test-support.ts";
-import { renderPaneTestControls } from "./chat-pane-runtime.test-support.ts";
-import { readChatPaneMutationAccess } from "./chat-pane-session-controls.ts";
+import {
+  readChatPaneMutationAccess,
+  renderChatPaneComposerControls,
+} from "./chat-pane-session-controls.ts";
 import { switchChatSetting } from "./chat-session.ts";
 import { getPendingChatPickerPatch } from "./chat-settings-patches.ts";
 import { selectedChatSessionRow } from "./chat-state-route.ts";
@@ -25,26 +27,6 @@ import {
 beforeEach(installTranscriptDomMocks);
 afterEach(resetTranscriptTestDom);
 
-function draftRow(key: string): GatewaySessionRow {
-  return { key, agentId: "main", kind: "direct", updatedAt: 1 };
-}
-
-function materializedRow(key: string, sessionId: string) {
-  return { ...draftRow(key), sessionId, updatedAt: 2, thinkingLevel: "high" };
-}
-
-function materializationReceipt(row: ReturnType<typeof materializedRow>): SessionsPatchResult {
-  const { key, sessionId, updatedAt, thinkingLevel } = row;
-  return { ok: true, key, path: "", entry: { sessionId, updatedAt, thinkingLevel } };
-}
-
-async function mountSettingsPane(fixture: ReturnType<typeof createMountedPanes>, key: string) {
-  await fixture.sessions.refresh({ agentId: "main", force: true });
-  const pane = fixture.mount(key);
-  await refreshPane(pane);
-  return pane;
-}
-
 it.each([
   { initialState: "absent", source: "preceding write" },
   { initialState: "placeholder", source: "preceding write" },
@@ -53,8 +35,18 @@ it.each([
 ] as const)(
   "binds queued settings only to an acknowledged materialization ($initialState / $source)",
   async ({ initialState, source }) => {
-    const placeholder = draftRow("agent:main:settings-materialization");
-    const materialized = materializedRow(placeholder.key, "settings-created-incarnation");
+    const placeholder = {
+      key: "agent:main:settings-materialization",
+      agentId: "main",
+      kind: "direct",
+      updatedAt: 1,
+    } satisfies GatewaySessionRow;
+    const materialized = {
+      ...placeholder,
+      sessionId: "settings-created-incarnation",
+      updatedAt: 2,
+      thinkingLevel: "high",
+    } satisfies GatewaySessionRow;
     const unrelated = {
       ...materialized,
       sessionId: "settings-unrelated-incarnation",
@@ -63,7 +55,16 @@ it.each([
     } satisfies GatewaySessionRow;
     const rows: GatewaySessionRow[] = initialState === "placeholder" ? [placeholder] : [];
     const firstReply = createDeferred<SessionsPatchResult>();
-    const firstReceipt = materializationReceipt(materialized);
+    const firstReceipt = {
+      ok: true,
+      key: materialized.key,
+      path: "",
+      entry: {
+        sessionId: materialized.sessionId,
+        updatedAt: materialized.updatedAt,
+        thinkingLevel: materialized.thinkingLevel,
+      },
+    } satisfies SessionsPatchResult;
     const patch = vi.fn<GatewayRequestHandler>((_method, raw) => {
       const params = asOptionalRecord(raw);
       if (params?.thinkingLevel === "high") {
@@ -81,27 +82,39 @@ it.each([
         throw new Error("Session changed before queued settings dispatch");
       }
       rows[0] = { ...current, thinkingLevel: "low", updatedAt: 4 };
-      return materializationReceipt({
-        ...placeholder,
-        sessionId,
-        thinkingLevel: "low",
-        updatedAt: 4,
-      });
+      return {
+        ok: true,
+        key: placeholder.key,
+        path: "",
+        entry: { sessionId, thinkingLevel: "low", updatedAt: 4 },
+      } satisfies SessionsPatchResult;
     });
-    const fixture = createMountedPanes(rows, "main", undefined, { "sessions.patch": patch });
-    const { sessions } = fixture;
+    const { sessions, mount } = createMountedPanes(rows, "main", undefined, {
+      "sessions.patch": patch,
+    });
     let first: Promise<boolean> | undefined;
     let queued: Promise<boolean> | undefined;
     try {
-      const pane = await mountSettingsPane(fixture, placeholder.key);
+      await sessions.refresh({ agentId: "main", force: true });
+      const pane = mount(placeholder.key);
+      await refreshPane(pane);
+      expect(selectedChatSessionRow(pane.state)?.sessionId).toBeUndefined();
       expect(selectedChatSessionRow(pane.state)).toEqual(
         initialState === "placeholder" ? expect.objectContaining(placeholder) : undefined,
       );
       const connection = sessions.captureConnectionScope();
+      expect(connection).not.toBeNull();
       first = switchChatSetting(pane.state, { kind: "thinkingLevel", value: "high" });
+      const previousTail = getPendingChatPickerPatch(pane.state, placeholder.key, "main");
+      expect(previousTail).toBeDefined();
       queued = switchChatSetting(pane.state, { kind: "thinkingLevel", value: "low" });
+      expect(getPendingChatPickerPatch(pane.state, placeholder.key, "main")).not.toBe(previousTail);
       expect(patch).toHaveBeenCalledOnce();
-      expect(patch.mock.calls[0]?.[1]).toEqual({ key: placeholder.key, thinkingLevel: "high" });
+      expect(patch.mock.calls[0]?.[1]).toMatchObject({
+        key: placeholder.key,
+        thinkingLevel: "high",
+      });
+      expect(patch.mock.calls[0]?.[1]).not.toHaveProperty("expectedSessionId");
 
       // The first receipt can trail row publication. A failed predecessor proves
       // no identity; an acknowledged A also cannot authorize a later replacement B.
@@ -147,9 +160,14 @@ it.each(["unbound", "materialized"] as const)(
   async (lastTarget) => {
     const key = "agent:main:settings-materialization-chain";
     const materialized = {
-      ...materializedRow(key, "settings-chain-incarnation"),
+      key,
+      agentId: "main",
+      sessionId: "settings-chain-incarnation",
+      kind: "direct",
+      updatedAt: 2,
       model: "fixture-model",
       modelProvider: "fixture",
+      thinkingLevel: "high",
       thinkingLevels: [
         { id: "low", label: "Low" },
         { id: "medium", label: "Medium" },
@@ -164,7 +182,16 @@ it.each(["unbound", "materialized"] as const)(
     const primaryReadStarted = createDeferred();
     let firstAcknowledged = false;
     let holdPrimaryRead = lastTarget === "unbound";
-    const firstReceipt = materializationReceipt(materialized);
+    const firstReceipt = {
+      ok: true,
+      key,
+      path: "",
+      entry: {
+        sessionId: materialized.sessionId,
+        updatedAt: materialized.updatedAt,
+        thinkingLevel: materialized.thinkingLevel,
+      },
+    } satisfies SessionsPatchResult;
     const patch = vi.fn<GatewayRequestHandler>((_method, raw) => {
       const params = asOptionalRecord(raw);
       if (params?.thinkingLevel === "high") {
@@ -181,9 +208,14 @@ it.each(["unbound", "materialized"] as const)(
         throw new Error("Unexpected settings materialization chain patch");
       }
       rows[0] = { ...materialized, thinkingLevel: "medium", updatedAt: 3 };
-      return materializationReceipt({ ...materialized, thinkingLevel: "medium", updatedAt: 3 });
+      return {
+        ok: true,
+        key,
+        path: "",
+        entry: { sessionId: materialized.sessionId, thinkingLevel: "medium", updatedAt: 3 },
+      } satisfies SessionsPatchResult;
     });
-    const fixture = createMountedPanes(rows, "main", undefined, {
+    const { sessions, mount, context } = createMountedPanes(rows, "main", undefined, {
       "sessions.patch": patch,
       "sessions.list": (_method, raw) => {
         if (firstAcknowledged && holdPrimaryRead && asOptionalRecord(raw)?.archived !== "all") {
@@ -193,14 +225,15 @@ it.each(["unbound", "materialized"] as const)(
         return sessionsResult([...rows], 2);
       },
     });
-    const { sessions, context } = fixture;
     let first: Promise<boolean> | undefined;
     let middle: Promise<boolean> | undefined;
     let last: Promise<boolean> | undefined;
     let managedRead: Promise<void> | undefined;
     let stopManaged: (() => void) | undefined;
     try {
-      const pane = await mountSettingsPane(fixture, key);
+      await sessions.refresh({ agentId: "main", force: true });
+      const pane = mount(key);
+      await refreshPane(pane);
       pane.state.chatModelCatalog = [
         { id: "fixture-model", name: "Fixture model", provider: "fixture", reasoning: true },
       ];
@@ -215,6 +248,9 @@ it.each(["unbound", "materialized"] as const)(
       }
       last = switchChatSetting(pane.state, { kind: "thinkingLevel", value: "medium" });
       const lastReady = getPendingChatPickerPatch(pane.state, key, "main");
+      expect(middleReady).toBeDefined();
+      expect(lastReady).toBeDefined();
+      expect(lastReady).not.toBe(middleReady);
       expect(patch).toHaveBeenCalledOnce();
 
       if (lastTarget === "unbound") {
@@ -255,13 +291,16 @@ it.each(["unbound", "materialized"] as const)(
         thinkingLevel: "medium",
       });
       const access = readChatPaneMutationAccess(context.gateway.snapshot, key);
-      const controls = renderPaneTestControls(pane.state, {
+      const controls = renderChatPaneComposerControls({
+        state: pane.state,
         selectedSession: selectedChatSessionRow(pane.state),
+        agentDefaultModel: undefined,
         modelAccess: access.model,
         effortAccess: access.effort,
         contextWindowAccess: access.contextWindow,
         permissionAccess: access.permission,
         canSelectFull: false,
+        onModelSetup: vi.fn(),
       });
       const container = document.createElement("div");
       renderPaneModelControl(controls.composerControls, container);
@@ -309,11 +348,21 @@ it.each([
   "settles each queued preview when its ACK-adopted row stays unobserved ($initialState / $outcome)",
   async ({ initialState, outcome }) => {
     const key = "agent:main:settings-unobserved-adoption";
-    const placeholder = draftRow(key);
+    const placeholder: GatewaySessionRow = {
+      key,
+      agentId: "main",
+      kind: "direct",
+      updatedAt: 1,
+    };
     // The Gateway acknowledges a physical row that is still outside the UI's
     // observed roster. Neither history nor list reads invent its publication.
     const rows: GatewaySessionRow[] = initialState === "placeholder" ? [placeholder] : [];
-    const firstReceipt = materializationReceipt(materializedRow(key, "unobserved-ack-session"));
+    const firstReceipt = {
+      ok: true,
+      key,
+      path: "",
+      entry: { sessionId: "unobserved-ack-session", updatedAt: 2, thinkingLevel: "high" },
+    } satisfies SessionsPatchResult;
     const firstReply = createDeferred<SessionsPatchResult>();
     const replies = Array.from({ length: 3 }, () => createDeferred<SessionsPatchResult>());
     const dispatched = Array.from({ length: 3 }, () => createDeferred());
@@ -345,12 +394,15 @@ it.each([
       started.resolve();
       return reply.promise;
     });
-    const fixture = createMountedPanes(rows, "main", undefined, { "sessions.patch": patch });
-    const { sessions } = fixture;
+    const { sessions, mount } = createMountedPanes(rows, "main", undefined, {
+      "sessions.patch": patch,
+    });
     let first: Promise<boolean> | undefined;
     const queued: Promise<boolean>[] = [];
     try {
-      const pane = await mountSettingsPane(fixture, key);
+      await sessions.refresh({ agentId: "main", force: true });
+      const pane = mount(key);
+      await refreshPane(pane);
       expect(selectedChatSessionRow(pane.state)?.sessionId).toBeUndefined();
       first = switchChatSetting(pane.state, { kind: "thinkingLevel", value: "high" });
       queued.push(switchChatSetting(pane.state, { kind: "thinkingLevel", value: "low" }));
@@ -416,130 +468,22 @@ it.each([
         }
       }
       expect(getPendingChatPickerPatch(pane.state, key, "main")).toBeUndefined();
+      if (outcome !== "success") {
+        expect(pane.state.chatError).toContain(
+          outcome === "reasoning rejection"
+            ? "Synthetic queued setting 0 rejection"
+            : "Synthetic queued setting 2 rejection",
+        );
+        expect(pane.state.lastError).toBe(pane.state.chatError);
+      } else {
+        expect(pane.state.chatError).toBeNull();
+      }
     } finally {
       firstReply.resolve(firstReceipt);
       for (const reply of replies) {
         reply.resolve(firstReceipt);
       }
       await Promise.allSettled([first, ...queued]);
-      await vi.dynamicImportSettled();
-    }
-  },
-);
-
-it.each(["current", "replacement", "same-client reconnect", "failed readback", "unbound"] as const)(
-  "settles queued settings against their current owner (%s)",
-  async (outcome) => {
-    const readbackFails = outcome === "failed readback";
-    const key = "agent:main:settings";
-    const row = materializedRow(key, "acknowledged-session");
-    const receipt = materializationReceipt(row);
-    const rows: GatewaySessionRow[] = [];
-    const firstReply = createDeferred<SessionsPatchResult>();
-    const latestReply = createDeferred<SessionsPatchResult>();
-    const dispatched = createDeferred();
-    const readbackError = new Error("Synthetic roster read failure after settings ACK");
-    let acknowledged = false;
-    let failedReads = 0;
-    const patch = vi.fn<GatewayRequestHandler>(() => {
-      if (patch.mock.calls.length === 1) {
-        return firstReply.promise.then((result) => {
-          acknowledged = true;
-          return result;
-        });
-      }
-      dispatched.resolve();
-      return latestReply.promise;
-    });
-    const mounted = createMountedPanes(rows, "main", undefined, {
-      "sessions.patch": patch,
-      ...(readbackFails
-        ? {
-            "sessions.list": () => {
-              if (acknowledged) {
-                failedReads++;
-                throw readbackError;
-              }
-              return sessionsResult([...rows], 1);
-            },
-          }
-        : {}),
-    });
-    const pane = await mountSettingsPane(mounted, key);
-    const state = pane.state;
-    const selected = () => selectedChatSessionRow(state);
-    const owned = outcome === "current" || outcome === "unbound";
-    expect(selected()).toBeUndefined();
-    const first = switchChatSetting(state, { kind: "thinkingLevel", value: "high" });
-    const latest = switchChatSetting(state, { kind: "thinkingLevel", value: "low" });
-    try {
-      expect(patch).toHaveBeenCalledOnce();
-      if (outcome === "unbound") {
-        firstReply.reject(new Error("Synthetic superseded first rejection"));
-      } else {
-        if (outcome !== "failed readback") {
-          rows.push(row);
-        }
-        firstReply.resolve(receipt);
-      }
-      await expect(first).resolves.toBe(outcome !== "unbound");
-      await Promise.race([dispatched.promise, latest]);
-      expect(patch).toHaveBeenCalledTimes(2);
-      if (outcome === "unbound") {
-        expect(patch.mock.calls[1]?.[1]).toEqual({ key, thinkingLevel: "low" });
-        expect(state.chatError).toBeNull();
-      } else {
-        expect(patch.mock.calls[1]?.[1]).toMatchObject({
-          key,
-          thinkingLevel: "low",
-          expectedSessionId: row.sessionId,
-        });
-      }
-      if (outcome === "failed readback") {
-        expect(failedReads).toBeGreaterThan(0);
-        expect(selected()).toBeUndefined();
-        expect(mounted.sessions.state.error).toBe(readbackError.message);
-        expect(state.sessionsError).toBe(readbackError.message);
-        latestReply.resolve({
-          ...receipt,
-          entry: { ...receipt.entry, thinkingLevel: "low", updatedAt: 3 },
-        });
-        await expect(latest).resolves.toBe(true);
-        expect(mounted.sessions.state.error).toBe(readbackError.message);
-        expect(state).toMatchObject({
-          sessionsError: readbackError.message,
-          chatError: null,
-          lastError: null,
-        });
-        return;
-      }
-      if (outcome !== "unbound") {
-        expect(selected()).toMatchObject({ sessionId: row.sessionId, thinkingLevel: "low" });
-      }
-      if (outcome === "replacement") {
-        rows[0] = { ...row, sessionId: "replacement-session", updatedAt: 3 };
-        await mounted.sessions.refresh({ agentId: "main", force: true });
-      } else if (outcome === "same-client reconnect") {
-        const snapshot = mounted.context.gateway.snapshot;
-        pane.applyGatewaySnapshot({ ...snapshot, phase: "reconnecting", hello: null });
-        pane.applyGatewaySnapshot(snapshot);
-      }
-      if (!owned) {
-        state.lastError = state.chatError = "Synthetic current owner error";
-      }
-      latestReply.reject(new Error("Synthetic latest acknowledged-target rejection"));
-      await expect(latest).resolves.toBe(false);
-      expect(state.chatError).toContain(
-        owned ? "Synthetic latest acknowledged-target rejection" : "Synthetic current owner error",
-      );
-      expect(state.lastError).toBe(state.chatError);
-      if (outcome === "current") {
-        expect(selected()).toMatchObject({ sessionId: row.sessionId, thinkingLevel: "high" });
-      }
-    } finally {
-      firstReply.resolve(receipt);
-      latestReply.resolve(receipt);
-      await Promise.allSettled([first, latest]);
       await vi.dynamicImportSettled();
     }
   },

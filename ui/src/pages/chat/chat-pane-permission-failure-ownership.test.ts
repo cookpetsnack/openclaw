@@ -12,7 +12,7 @@ import { mountSolid } from "../../test-helpers/mount-solid.ts";
 import { flush } from "../../test-helpers/solid-settle.ts";
 import { makeChatHost } from "./chat-host.test-support.ts";
 import { createMountedPanes, refreshPane } from "./chat-pane-mounted.test-support.ts";
-import { renderPaneTestControls } from "./chat-pane-runtime.test-support.ts";
+import { renderChatPaneComposerControls } from "./chat-pane-session-controls.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
 import { selectedChatSessionRow } from "./chat-state-route.ts";
 import { ChatPermissionPicker } from "./components/chat-permission-picker.tsx";
@@ -22,7 +22,17 @@ import {
 } from "./components/chat-transcript.test-support.ts";
 
 function permissionPicker(state: ChatPageHost, selectedSession: GatewaySessionRow | undefined) {
-  return renderPaneTestControls(state, { selectedSession }).permissionPicker;
+  return renderChatPaneComposerControls({
+    state,
+    selectedSession,
+    agentDefaultModel: undefined,
+    modelAccess: { allowed: true, requiredScope: "operator.write" },
+    effortAccess: { allowed: true, requiredScope: "operator.write" },
+    contextWindowAccess: { allowed: true, requiredScope: "operator.admin" },
+    permissionAccess: { allowed: true, requiredScope: "operator.write" },
+    canSelectFull: true,
+    onModelSetup: vi.fn(),
+  }).permissionPicker;
 }
 
 function permissionSession(

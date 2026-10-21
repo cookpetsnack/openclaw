@@ -1,54 +1,113 @@
 // Tests workspace dotenv blocklist completeness across shipped runtime controls.
 import fs from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
-import { setCurrentPluginMetadataSnapshot } from "../plugins/current-plugin-metadata.test-support.js";
+import {
+  makeEmptyPluginMetadataOwners,
+  setCurrentPluginMetadataSnapshot,
+} from "../plugins/current-plugin-metadata.test-support.js";
 import { resolveInstalledPluginIndexPolicyHash } from "../plugins/installed-plugin-index-policy.js";
 import type { PluginManifestRecord } from "../plugins/manifest-registry.js";
-import { createEmptyPluginMetadataSnapshot } from "../plugins/plugin-metadata-empty.test-support.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
 import { buildPluginMetadataProviderFacts } from "../plugins/plugin-metadata-provider-facts.js";
 import type { PluginMetadataSnapshot } from "../plugins/plugin-metadata-snapshot.types.js";
 import { buildDeclaredProviderOwnerIndex } from "../plugins/provider-owner-index.js";
 import { listKnownProviderAuthEnvVarNamesCore } from "../secrets/provider-env-vars.js";
+import { captureFullEnv, deleteTestEnvValue, setTestEnvValue } from "../test-utils/env.js";
 import { loadDotEnv, loadDotEnvAsync, loadWorkspaceDotEnvFile } from "./dotenv.js";
-import { clearEnv, envContents, useDotEnvFixture, writeEnvFile } from "./dotenv.test-support.js";
 
-const fixture = useDotEnvFixture();
+type DotEnvFixture = {
+  base: string;
+  cwdDir: string;
+  stateDir: string;
+};
+
+async function writeEnvFile(filePath: string, contents: string) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await fs.writeFile(filePath, contents, "utf8");
+}
+
+async function withDotEnvFixture(run: (fixture: DotEnvFixture) => Promise<void>) {
+  const envSnapshot = captureFullEnv();
+  try {
+    const base = await fs.mkdtemp(path.join(os.tmpdir(), "openclaw-dotenv-test-"));
+    const cwdDir = path.join(base, "cwd");
+    const stateDir = path.join(base, "state");
+    setTestEnvValue("OPENCLAW_STATE_DIR", stateDir);
+    await fs.mkdir(cwdDir, { recursive: true });
+    await fs.mkdir(stateDir, { recursive: true });
+    await run({ base, cwdDir, stateDir });
+  } finally {
+    vi.restoreAllMocks();
+    envSnapshot.restore();
+  }
+}
+
+function clearEnv(keys: readonly string[]) {
+  for (const key of keys) {
+    deleteTestEnvValue(key);
+  }
+}
 
 async function expectWorkspaceEnv(
   blocked: Record<string, string>,
   allowed: Record<string, string> = {},
 ) {
-  const entries = { ...blocked, ...allowed };
-  await writeEnvFile(path.join(fixture.cwdDir, ".env"), envContents(entries));
-  clearEnv(Object.keys(entries));
-  loadWorkspaceDotEnvFile(path.join(fixture.cwdDir, ".env"));
-  for (const key of Object.keys(blocked)) {
-    expect(process.env[key], `${key} should be blocked by workspace .env`).toBeUndefined();
-  }
-  for (const [key, value] of Object.entries(allowed)) {
-    expect(process.env[key], key).toBe(value);
-  }
+  await withDotEnvFixture(async ({ cwdDir }) => {
+    const entries = { ...blocked, ...allowed };
+    await writeEnvFile(
+      path.join(cwdDir, ".env"),
+      Object.entries(entries)
+        .map(([key, value]) => `${key}=${value}`)
+        .join("\n"),
+    );
+    clearEnv(Object.keys(entries));
+    loadWorkspaceDotEnvFile(path.join(cwdDir, ".env"));
+    for (const key of Object.keys(blocked)) {
+      expect(process.env[key], `${key} should be blocked by workspace .env`).toBeUndefined();
+    }
+    for (const [key, value] of Object.entries(allowed)) {
+      expect(process.env[key], key).toBe(value);
+    }
+  });
 }
 
 function createManifestBackedProviderSnapshot(
   plugin: PluginManifestRecord,
 ): PluginMetadataSnapshot {
-  const empty = createEmptyPluginMetadataSnapshot();
   const policyHash = resolveInstalledPluginIndexPolicyHash({});
-  const index = { ...empty.index, policyHash, generatedAtMs: 0 };
+  const index: PluginMetadataSnapshot["index"] = {
+    version: 1,
+    hostContractVersion: "test",
+    compatRegistryVersion: "test",
+    migrationVersion: 1,
+    policyHash,
+    generatedAtMs: 0,
+    installRecords: {},
+    plugins: [],
+    diagnostics: [],
+  };
   return {
-    ...empty,
     policyHash,
     index,
     registryIndex: index,
+    registryDiagnostics: [],
     manifestRegistry: { plugins: [plugin], diagnostics: [] },
     plugins: [plugin],
+    diagnostics: [],
     byPluginId: new Map([[plugin.id, plugin]]),
+    normalizePluginId: (pluginId: string) => pluginId,
     declaredProviderOwners: buildDeclaredProviderOwnerIndex([plugin]),
-    owners: { ...empty.owners, ...buildPluginMetadataProviderFacts([plugin]) },
-    metrics: { ...empty.metrics, manifestPluginCount: 1 },
+    owners: { ...makeEmptyPluginMetadataOwners(), ...buildPluginMetadataProviderFacts([plugin]) },
+    metrics: {
+      registrySnapshotMs: 0,
+      manifestRegistryMs: 0,
+      ownerMapsMs: 0,
+      totalMs: 0,
+      indexPluginCount: 0,
+      manifestPluginCount: 1,
+    },
   };
 }
 
@@ -56,104 +115,107 @@ describe("workspace .env blocklist completeness", () => {
   it.each(["sync", "async"])(
     "keeps OCM launch context trusted with the %s loader",
     async (mode) => {
-      const { base, cwdDir, stateDir } = fixture;
-      try {
-        await writeEnvFile(
-          path.join(cwdDir, ".env"),
-          [
-            "OCM_SELF=workspace-executable",
-            "OCM_HOME=workspace-home",
-            "OCM_ACTIVE_ENV=workspace-environment",
-            "OCM_ACTIVE_ENV_ROOT=workspace-root",
-            "OCM_SUPERVISOR_MODE=workspace-supervisor",
-            "PROJECT_NAME=allowed",
-          ].join("\n"),
-        );
-        await writeEnvFile(
-          path.join(stateDir, ".env"),
-          "OCM_SELF=global-executable\nOCM_HOME=global-home\n",
-        );
-        const env: NodeJS.ProcessEnv = {
-          HOME: base,
-          OPENCLAW_STATE_DIR: stateDir,
-          OCM_ACTIVE_ENV: "inherited-environment",
-        };
-        vi.spyOn(process, "cwd").mockReturnValue(cwdDir);
+      await withDotEnvFixture(async ({ base, cwdDir, stateDir }) => {
+        try {
+          await writeEnvFile(
+            path.join(cwdDir, ".env"),
+            [
+              "OCM_SELF=workspace-executable",
+              "OCM_HOME=workspace-home",
+              "OCM_ACTIVE_ENV=workspace-environment",
+              "OCM_ACTIVE_ENV_ROOT=workspace-root",
+              "OCM_SUPERVISOR_MODE=workspace-supervisor",
+              "PROJECT_NAME=allowed",
+            ].join("\n"),
+          );
+          await writeEnvFile(
+            path.join(stateDir, ".env"),
+            "OCM_SELF=global-executable\nOCM_HOME=global-home\n",
+          );
+          const env: NodeJS.ProcessEnv = {
+            HOME: base,
+            OPENCLAW_STATE_DIR: stateDir,
+            OCM_ACTIVE_ENV: "inherited-environment",
+          };
+          vi.spyOn(process, "cwd").mockReturnValue(cwdDir);
 
-        if (mode === "async") {
-          await loadDotEnvAsync({ env, cwd: cwdDir });
-        } else {
-          loadDotEnv({ env });
+          if (mode === "async") {
+            await loadDotEnvAsync({ env, cwd: cwdDir });
+          } else {
+            loadDotEnv({ env });
+          }
+
+          expect(env.OCM_SELF).toBe("global-executable");
+          expect(env.OCM_HOME).toBe("global-home");
+          expect(env.OCM_ACTIVE_ENV).toBe("inherited-environment");
+          expect(env.OCM_ACTIVE_ENV_ROOT).toBeUndefined();
+          expect(env.OCM_SUPERVISOR_MODE).toBeUndefined();
+          expect(env.PROJECT_NAME).toBe("allowed");
+        } finally {
+          await fs.rm(base, { recursive: true, force: true });
         }
-
-        expect(env).toEqual({
-          HOME: base,
-          OPENCLAW_STATE_DIR: stateDir,
-          OCM_SELF: "global-executable",
-          OCM_HOME: "global-home",
-          OCM_ACTIVE_ENV: "inherited-environment",
-          PROJECT_NAME: "allowed",
-        });
-      } finally {
-        await fs.rm(base, { recursive: true, force: true });
-      }
+      });
     },
   );
 
   it("keeps trusted global dotenv for global plugin provider auth vars", async () => {
-    const { cwdDir, stateDir } = fixture;
-    const plugin: PluginManifestRecord = {
-      id: "runtime-cloud",
-      channels: [],
-      providers: ["runtime-cloud"],
-      cliBackends: [],
-      skills: [],
-      hooks: [],
-      origin: "global",
-      rootDir: "/plugins/runtime-cloud",
-      source: "/plugins/runtime-cloud/index.js",
-      manifestPath: "/plugins/runtime-cloud/openclaw.plugin.json",
-      setup: { providers: [{ id: "runtime-cloud", envVars: ["RUNTIME_CLOUD_API_KEY"] }] },
-    };
-    await writeEnvFile(path.join(cwdDir, ".env"), "RUNTIME_CLOUD_API_KEY=workspace-plugin-key\n");
-    await writeEnvFile(path.join(stateDir, ".env"), "RUNTIME_CLOUD_API_KEY=global-plugin-key\n");
+    await withDotEnvFixture(async ({ cwdDir, stateDir }) => {
+      const plugin: PluginManifestRecord = {
+        id: "runtime-cloud",
+        channels: [],
+        providers: ["runtime-cloud"],
+        cliBackends: [],
+        skills: [],
+        hooks: [],
+        origin: "global",
+        rootDir: "/plugins/runtime-cloud",
+        source: "/plugins/runtime-cloud/index.js",
+        manifestPath: "/plugins/runtime-cloud/openclaw.plugin.json",
+        setup: { providers: [{ id: "runtime-cloud", envVars: ["RUNTIME_CLOUD_API_KEY"] }] },
+      };
+      await writeEnvFile(path.join(cwdDir, ".env"), "RUNTIME_CLOUD_API_KEY=workspace-plugin-key\n");
+      await writeEnvFile(path.join(stateDir, ".env"), "RUNTIME_CLOUD_API_KEY=global-plugin-key\n");
 
-    delete process.env.RUNTIME_CLOUD_API_KEY;
-    vi.spyOn(process, "cwd").mockReturnValue(cwdDir);
-    setCurrentPluginMetadataSnapshot(createManifestBackedProviderSnapshot(plugin), {
-      config: {},
-      env: process.env,
+      delete process.env.RUNTIME_CLOUD_API_KEY;
+      vi.spyOn(process, "cwd").mockReturnValue(cwdDir);
+      setCurrentPluginMetadataSnapshot(createManifestBackedProviderSnapshot(plugin), {
+        config: {},
+        env: process.env,
+      });
+
+      try {
+        loadDotEnv();
+
+        expect(process.env.RUNTIME_CLOUD_API_KEY).toBe("global-plugin-key");
+      } finally {
+        clearPluginMetadataLifecycleCaches();
+      }
     });
-
-    try {
-      loadDotEnv();
-
-      expect(process.env.RUNTIME_CLOUD_API_KEY).toBe("global-plugin-key");
-    } finally {
-      clearPluginMetadataLifecycleCaches();
-    }
   });
 
   it("keeps registered provider auth vars from trusted global dotenv", async () => {
-    const { cwdDir, stateDir } = fixture;
-    const providerAuthKeys = listKnownProviderAuthEnvVarNamesCore().toSorted();
-    await writeEnvFile(
-      path.join(cwdDir, ".env"),
-      `${providerAuthKeys.map((key) => `${key}=workspace-${key}`).join("\n")}\n`,
-    );
-    await writeEnvFile(
-      path.join(stateDir, ".env"),
-      `${providerAuthKeys.map((key) => `${key}=global-${key}`).join("\n")}\n`,
-    );
+    await withDotEnvFixture(async ({ cwdDir, stateDir }) => {
+      const providerAuthKeys = listKnownProviderAuthEnvVarNamesCore().toSorted();
+      await writeEnvFile(
+        path.join(cwdDir, ".env"),
+        `${providerAuthKeys.map((key) => `${key}=workspace-${key}`).join("\n")}\n`,
+      );
+      await writeEnvFile(
+        path.join(stateDir, ".env"),
+        `${providerAuthKeys.map((key) => `${key}=global-${key}`).join("\n")}\n`,
+      );
 
-    clearEnv(providerAuthKeys);
-    vi.spyOn(process, "cwd").mockReturnValue(cwdDir);
+      clearEnv(providerAuthKeys);
+      vi.spyOn(process, "cwd").mockReturnValue(cwdDir);
 
-    loadDotEnv();
+      loadDotEnv();
 
-    for (const key of providerAuthKeys) {
-      expect(process.env[key], `${key} should come from trusted global .env`).toBe(`global-${key}`);
-    }
+      for (const key of providerAuthKeys) {
+        expect(process.env[key], `${key} should come from trusted global .env`).toBe(
+          `global-${key}`,
+        );
+      }
+    });
   });
 
   it("blocks runtime-control variables from workspace .env", async () => {
@@ -210,6 +272,22 @@ describe("workspace .env blocklist completeness", () => {
         MY_SKIP_AUTHORS: "notes",
         VITE_DISABLE_AUTHENTICATION: "false",
       },
+    );
+  });
+
+  it("blocks bundled connector endpoint vars from workspace .env", async () => {
+    await expectWorkspaceEnv(
+      {
+        MATRIX_HOMESERVER: "https://evil-matrix.example.com",
+        MATTERMOST_URL: "https://evil-mattermost.example.com",
+        DISCORD_API_URL: "https://evil-discord.example.com/api/v10",
+        IRC_HOST: "evil-irc.example.com",
+        BUZZ_RELAY_URL: "wss://evil-buzz.example.com/relay",
+        SYNOLOGY_CHAT_INCOMING_URL: "https://evil-synology.example.com/incoming",
+        SYNOLOGY_NAS_HOST: "evil-synology.example.com",
+        AZURE_SPEECH_ENDPOINT: "https://evil-speech.example.com",
+      },
+      { SAFE_PROVIDER_NAME: "allowed" },
     );
   });
 

@@ -3,7 +3,14 @@ import { createDeferred } from "../../test/helpers/promise.js";
 import { publishSystemEventStoreResolver } from "../infra/system-event-ownership.js";
 import { resolveOpenClawAgentSqlitePath } from "../state/openclaw-agent-db.paths.js";
 import type { OpenClawStateWorkerContext } from "../state/openclaw-state-worker-context.types.js";
-import { recordSessionGoalChanged, recordSessionStateEventAsync } from "./session-state-events.js";
+import { recordSessionCreated } from "./session-created.js";
+import {
+  recordSessionCompacted,
+  recordSessionGoalChanged,
+  recordSessionHumanDirectMessage,
+  recordSessionStateEventAsync,
+  recordSubagentSpawned,
+} from "./session-state-events.js";
 import type { SessionStateEventRow, SessionStateNotice } from "./session-state-events.kernel.js";
 
 const edge = vi.hoisted(() => {
@@ -196,6 +203,29 @@ describe("Session signal worker reconciliation", () => {
     },
   );
 
+  it("keeps watched human-turn recording off the main-thread transaction owner", async () => {
+    const recorded = createDeferred<Recorded>();
+    edge.execute.mockReturnValueOnce(recorded.promise);
+    let settled = false;
+    const pending = Promise.resolve(
+      recordSessionHumanDirectMessage({
+        sessionKey: "agent:main:child",
+        entry: { sessionId: "child-session", updatedAt: now, spawnedBy: "agent:main:main" },
+        actor: { actorType: "human" },
+        channel: "webchat",
+      }),
+    ).then(() => {
+      settled = true;
+    });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+    expect(edge.notice).not.toHaveBeenCalled();
+    recorded.resolve(recordedResult);
+    await pending;
+    expect(edge.notice).toHaveBeenCalledWith(notice);
+    expect(settled).toBe(true);
+  });
+
   it("retains committed notices and pruning before producer settlement", async () => {
     const recorded = createDeferred<Recorded>();
     const recordStarted = createDeferred();
@@ -250,19 +280,19 @@ describe("Session signal worker reconciliation", () => {
     expect(returned).toBe(true);
   });
 
-  it.each(["capture", "record", "notice", "prune"] as const)(
+  it.each(["capture", "notice", "prune"] as const)(
     "preserves the originating committed result after %s failure without replay",
     async (failure) => {
       const error = Object.assign(new Error("Synthetic event failure"), {
         code: "outcome-unknown",
       });
-      if (failure === "capture" || failure === "notice") {
+      if (failure !== "prune") {
         edge[failure].mockImplementationOnce(() => {
           throw error;
         });
       } else {
         edge.execute.mockImplementation(async (command) => {
-          if (command.type === `sessionState.${failure}`) {
+          if (command.type === "sessionState.prune") {
             throw error;
           }
           return recordedResult;
@@ -272,10 +302,6 @@ describe("Session signal worker reconciliation", () => {
       expect(
         edge.execute.mock.calls.filter(([command]) => command.type === "sessionState.record"),
       ).toHaveLength(failure === "capture" ? 0 : 1);
-      if (failure === "record") {
-        expect(edge.execute).toHaveBeenCalledTimes(1);
-        expect(edge.notice).not.toHaveBeenCalled();
-      }
       expect(edge.warn).toHaveBeenCalled();
     },
   );
@@ -315,5 +341,42 @@ describe("Session signal worker reconciliation", () => {
     expect(
       edge.execute.mock.calls.filter(([command]) => command.type === "sessionState.prune"),
     ).toHaveLength(2);
+  });
+
+  it.each([
+    [
+      "creation",
+      () =>
+        recordSessionCreated(
+          {},
+          {
+            sessionKey: "agent:main:main",
+            entry: { sessionId: "created", updatedAt: 1, createdActor: { type: "system" } },
+          },
+        ),
+    ],
+    [
+      "compaction",
+      () => recordSessionCompacted({ sessionKey: "agent:main:child", operationId: "compact" }),
+    ],
+    [
+      "spawn",
+      () =>
+        recordSubagentSpawned({
+          childSessionKey: "agent:main:child",
+          childRunId: "spawn",
+          requesterSessionKey: "agent:main:main",
+          agentId: "main",
+        }),
+    ],
+  ] as const)("settles %s once after an unknown signal outcome", async (_name, record) => {
+    edge.execute.mockRejectedValueOnce(
+      Object.assign(new Error("Synthetic lost signal reply"), {
+        code: "outcome-unknown",
+      }),
+    );
+    await expect(record()).resolves.toBeUndefined();
+    expect(edge.execute).toHaveBeenCalledTimes(1);
+    expect(edge.notice).not.toHaveBeenCalled();
   });
 });

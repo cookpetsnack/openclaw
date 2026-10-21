@@ -72,6 +72,7 @@ import {
   resolveStaticFileContentType,
   startStaticFileServer,
   trimForSummary,
+  shouldRunPackagedUpgradeStatusProbe,
   shouldRunWindowsInstalledBrowserOverrideImportSmoke,
   shouldRunMainChannelDevUpdate,
   shouldUseManagedGatewayService,
@@ -114,37 +115,6 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanupDirs) => {
     cleanupDirs();
   });
 });
-
-function writeJson(path: string, value: unknown) {
-  writeFileSync(path, JSON.stringify(value), "utf8");
-}
-
-function descendantProgram(stubborn = false, logSentinel = false) {
-  const childScript = `${stubborn ? "process.on('SIGTERM', () => {}); " : ""}setInterval(() => {}, 1000); process.send('ready');`;
-  const indent = logSentinel ? "  " : "";
-  return [
-    "import { spawn } from 'node:child_process';",
-    "import fs from 'node:fs';",
-    fixtureReceiptClientSource(receipts.endpoint),
-    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(childScript)}], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });`,
-    "child.once('message', () => {",
-    ...(logSentinel ? ["process.stdout.write('signal cleanup log sentinel\\n', () => {"] : []),
-    `${indent}fs.writeFileSync(process.env.OPENCLAW_TEST_CHILD_PID, String(child.pid));`,
-    `${indent}sendReceipt(process.env.OPENCLAW_TEST_CHILD_PID, 'ready');`,
-    `${indent}child.disconnect();`,
-    ...(logSentinel ? ["});"] : []),
-    "});",
-    "setInterval(() => {}, 1000);",
-  ].join("");
-}
-
-function killRecordedDescendant(pidPath: string, pid?: number) {
-  const recordedPid =
-    pid ?? (existsSync(pidPath) ? Number.parseInt(readFileSync(pidPath, "utf8"), 10) : 0);
-  if (recordedPid && isProcessAlive(recordedPid)) {
-    process.kill(recordedPid, "SIGKILL");
-  }
-}
 let receipts: FixtureReceiptChannel;
 beforeAll(async () => {
   receipts = await openFixtureReceiptChannel();
@@ -219,39 +189,15 @@ async function captureCommand(script: string, maxOutputBytes: number) {
   return { ...result, log: readFileSync(logPath, "utf8") };
 }
 
-async function withStaticArtifact(
-  payload: Buffer,
-  run: (
-    server: Awaited<ReturnType<typeof startStaticFileServer>>,
-    logPath: string,
-  ) => Promise<void>,
-  fileName = "openclaw-2026.4.14.tgz",
-  ignoreCleanupError = true,
-) {
-  const dir = tempDirs.make("openclaw-cross-os-static-server-");
-  const filePath = join(dir, fileName);
-  const logPath = join(dir, "server.log");
-  writeFileSync(filePath, payload);
-  const server = await startStaticFileServer({ filePath, logPath });
-  try {
-    await run(server, logPath);
-  } finally {
-    const close = server.close();
-    await (ignoreCleanupError ? close.catch(() => {}) : close);
-  }
-}
-
-function createGatewayHandleFixture(
-  dir: string,
-  name: string,
-  params: {
-    beforeLaunch?: string;
-    afterLaunch?: string;
-    appendOnWaitForClose?: string;
-    exited?: boolean;
-  } = {},
-) {
-  const logPath = join(dir, `${name}.log`);
+function createGatewayHandleFixture(params: {
+  dir: string;
+  name: string;
+  beforeLaunch?: string;
+  afterLaunch?: string;
+  appendOnWaitForClose?: string;
+  exited: boolean;
+}) {
+  const logPath = join(params.dir, `${params.name}.log`);
   const beforeLaunch = params.beforeLaunch ?? "";
   writeFileSync(logPath, beforeLaunch);
   if (params.afterLaunch) {
@@ -335,15 +281,20 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
   });
 
   it("fails closed before borrowing an occupied managed-service account", () => {
-    for (const serviceInstalled of [true, false]) {
-      expect(() =>
-        assertManagedGatewayInstallerHostAvailable({
-          accountHome: "C:\\Users\\runneradmin",
-          serviceInstalled,
-          pathExists: (path) => !serviceInstalled && path.endsWith(".openclaw"),
-        }),
-      ).toThrow(/pristine host account/);
-    }
+    expect(() =>
+      assertManagedGatewayInstallerHostAvailable({
+        accountHome: "C:\\Users\\runneradmin",
+        serviceInstalled: true,
+        pathExists: () => false,
+      }),
+    ).toThrow(/pristine host account/);
+    expect(() =>
+      assertManagedGatewayInstallerHostAvailable({
+        accountHome: "C:\\Users\\runneradmin",
+        serviceInstalled: false,
+        pathExists: (path) => path.endsWith(".openclaw"),
+      }),
+    ).toThrow(/pristine host account/);
   });
 
   it("requires a structured clean-service preflight result", () => {
@@ -373,14 +324,40 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
     replacement.release();
   });
 
-  it.each(["win32", "linux"] as const)("bounds default installer fetches on %s", (platform) => {
-    expect(
-      buildInstallerSmokeScript({
-        installerUrl: "https://openclaw.ai/install",
-        installTarget: "2026.7.1",
-        platform,
-      }),
-    ).toContain("-fsSL --connect-timeout 10 --max-time 120");
+  it("bounds public installer fetches on Windows and POSIX", () => {
+    const windowsScript = buildInstallerSmokeScript({
+      installerUrl: "https://openclaw.ai/install.ps1",
+      installTarget: "2026.7.1",
+      platform: "win32",
+    });
+    const posixScript = buildInstallerSmokeScript({
+      installerUrl: "https://openclaw.ai/install.sh",
+      installTarget: "2026.7.1",
+      platform: "linux",
+    });
+
+    expect(windowsScript).toContain(
+      "curl.exe -fsSL --connect-timeout 10 --max-time 120 -o $installerPath 'https://openclaw.ai/install.ps1'",
+    );
+    expect(windowsScript).toContain("openclaw-installer-");
+    expect(windowsScript).toContain("if ($LASTEXITCODE -ne 0)");
+    expect(windowsScript).toContain(
+      "[System.IO.File]::ReadAllText($installerPath, [System.Text.Encoding]::UTF8)",
+    );
+    expect(windowsScript).toContain(
+      "Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue",
+    );
+    expect(windowsScript).not.toContain("Invoke-WebRequest");
+    expect(posixScript).toContain(
+      'installer_path="$(mktemp "${TMPDIR:-/tmp}/openclaw-installer-XXXXXX")"',
+    );
+    expect(posixScript).toContain("trap 'rm -f \"$installer_path\"' EXIT");
+    expect(posixScript).toContain(
+      "curl -fsSL --connect-timeout 10 --max-time 120 -o \"$installer_path\" 'https://openclaw.ai/install.sh'",
+    );
+    expect(posixScript).toContain("bash -- \"$installer_path\" --version '2026.7.1' --no-onboard");
+    expect(posixScript).not.toContain("| bash");
+    expect(posixScript).toContain("set -euo pipefail");
   });
 
   it("drops split surrogate pairs when truncating response bodies", async () => {
@@ -509,7 +486,9 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
       const dir = tempDirs.make("openclaw-cross-os-gateway-restart-");
       const refusal =
         "OpenClaw plugin migration inputs changed during startup convergence; refusing to report the gateway ready.\n";
-      const first = createGatewayHandleFixture(dir, "first", {
+      const first = createGatewayHandleFixture({
+        dir,
+        name: "first",
         beforeLaunch: scenario === "stale" ? refusal : "",
         appendOnWaitForClose: scenario === "recovered" ? refusal : "",
         afterLaunch:
@@ -520,7 +499,9 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
               : refusal,
         exited: scenario !== "live",
       });
-      const second = createGatewayHandleFixture(dir, "second", {
+      const second = createGatewayHandleFixture({
+        dir,
+        name: "second",
         afterLaunch: refusal,
         exited: scenario === "repeated",
       });
@@ -558,8 +539,16 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
 
   it("routes the Discord manual relaunch through the bounded retry wait", async () => {
     const dir = tempDirs.make("openclaw-cross-os-discord-gateway-");
-    const previous = createGatewayHandleFixture(dir, "previous");
-    const started = createGatewayHandleFixture(dir, "started");
+    const previous = createGatewayHandleFixture({
+      dir,
+      name: "previous",
+      exited: false,
+    });
+    const started = createGatewayHandleFixture({
+      dir,
+      name: "started",
+      exited: false,
+    });
     const lane = {
       name: "installer-fresh",
       rootDir: dir,
@@ -623,13 +612,19 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
   );
 
   it("rejects malformed cross-OS positive integer environment values", () => {
-    const key = "OPENCLAW_CROSS_OS_COMMAND_HEARTBEAT_SECONDS";
-    const parse = (raw?: string) =>
-      parsePositiveIntegerEnv(key, 60, raw === undefined ? {} : { [key]: raw });
-    expect(parse()).toBe(60);
-    expect(parse("25")).toBe(25);
+    expect(parsePositiveIntegerEnv("OPENCLAW_CROSS_OS_COMMAND_HEARTBEAT_SECONDS", 60, {})).toBe(60);
+    expect(
+      parsePositiveIntegerEnv("OPENCLAW_CROSS_OS_COMMAND_HEARTBEAT_SECONDS", 60, {
+        OPENCLAW_CROSS_OS_COMMAND_HEARTBEAT_SECONDS: "25",
+      }),
+    ).toBe(25);
+
     for (const raw of ["1e3", "25ms", "1.5", "0", "-1", String(Number.MAX_SAFE_INTEGER + 1)]) {
-      expect(() => parse(raw)).toThrow(`${key} must be a positive integer`);
+      expect(() =>
+        parsePositiveIntegerEnv("OPENCLAW_CROSS_OS_COMMAND_HEARTBEAT_SECONDS", 60, {
+          OPENCLAW_CROSS_OS_COMMAND_HEARTBEAT_SECONDS: raw,
+        }),
+      ).toThrow("OPENCLAW_CROSS_OS_COMMAND_HEARTBEAT_SECONDS must be a positive integer");
     }
   });
 
@@ -746,14 +741,24 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
       })?.model,
     ).toBe("openai/gpt-5.4-nano");
     expect(resolveProviderConfig("openai", {})?.model).toBe("openai/gpt-5.6-luna");
+    expect(resolveProviderConfig("openai", {})?.requiredCompanionPackages).toEqual([
+      "@openclaw/codex",
+    ]);
+    expect(resolveProviderConfig("anthropic", {})?.requiredCompanionPackages).toEqual([]);
+    expect(resolveProviderConfig("minimax", {})?.requiredCompanionPackages).toEqual([]);
   });
 
   it("can stage packaged-upgrade baselines without npm lifecycle scripts", () => {
-    expect(buildNpmGlobalInstallArgs("openclaw@2026.5.2", { ignoreScripts: true })).toEqual(
-      "install -g openclaw@2026.5.2 --omit=dev --no-fund --no-audit --ignore-scripts --loglevel=notice".split(
-        " ",
-      ),
-    );
+    expect(buildNpmGlobalInstallArgs("openclaw@2026.5.2", { ignoreScripts: true })).toEqual([
+      "install",
+      "-g",
+      "openclaw@2026.5.2",
+      "--omit=dev",
+      "--no-fund",
+      "--no-audit",
+      "--ignore-scripts",
+      "--loglevel=notice",
+    ]);
   });
 
   it("rejects unsafe pnpm pack destinations", () => {
@@ -788,11 +793,14 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
       "# Changelog\n\n## 2026.9.1\n\n- Preserve source-owned inventory during candidate packaging.\n",
     );
     writeFileSync(join(sourceDir, "pnpm-workspace.yaml"), "nodeLinker: isolated\n");
-    writeJson(join(sourceDir, "package.json"), {
-      name: "openclaw",
-      version: "2026.9.1",
-      bundleDependencies: ["fixture-runtime"],
-    });
+    writeFileSync(
+      join(sourceDir, "package.json"),
+      JSON.stringify({
+        name: "openclaw",
+        version: "2026.9.1",
+        bundleDependencies: ["fixture-runtime"],
+      }),
+    );
     writeFileSync(helperPath, "export {};\n");
     const commands = vi
       .spyOn(candidateProcess, "runCommand")
@@ -801,7 +809,7 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
         if (args[0] === "rev-parse") {
           stdout = sourceSha;
         } else if (args[0] === helperPath) {
-          writeJson(inventoryPath, ["dist/from-source-helper.js"]);
+          writeFileSync(inventoryPath, JSON.stringify(["dist/from-source-helper.js"]));
           writeFileSync(candidateTgz, "fixture tarball");
           stdout = `${candidateTgz}\n`;
         } else if (args[0] === "pack") {
@@ -828,45 +836,63 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
   });
 
   it.each([
-    ["stable predecessor", "2026.8.32", undefined],
-    ["extended-stable predecessor and candidate", "2026.8.33", 1200],
-  ] as const)(
-    "routes packaged upgrades from the %s channel",
-    (_, baselineVersion, timeoutSeconds) => {
-      const candidateUrl = "http://127.0.0.1:49152/openclaw-current.tgz";
-      const extended = baselineVersion === "2026.8.33";
-      const updateCommand = buildPackagedUpgradeUpdateCommand({
-        env: {
-          NPM_CONFIG_REGISTRY: "http://127.0.0.1:49152",
-          FOO: "bar",
-          NODE_COMPILE_CACHE: "/tmp/stale-openclaw-cache",
-          OPENCLAW_DISABLE_BUNDLED_PLUGIN_POSTINSTALL: "1",
-        },
-        candidateUrl,
-        candidateVersion: "2026.8.34",
-        timeoutSeconds,
-        baselineVersion,
-      });
-      expect(updateCommand.args).toEqual([
+    {
+      label: "stable predecessor",
+      baselineVersion: "2026.8.32",
+      candidateVersion: "2026.8.34",
+      timeoutSeconds: undefined,
+      expectedArgs: [
         "update",
-        ...(extended ? [] : ["--tag", candidateUrl]),
+        "--tag",
+        "http://127.0.0.1:49152/openclaw-current.tgz",
         "--yes",
         "--json",
         "--no-restart",
         "--timeout",
-        extended || process.platform !== "win32" ? "1200" : "600",
-      ]);
-      expect(updateCommand.env).toEqual({
+        process.platform === "win32" ? "600" : "1200",
+      ],
+      expectedPackageSpec: undefined,
+      expectedNpmTag: undefined,
+    },
+    {
+      label: "extended-stable predecessor and candidate",
+      baselineVersion: "2026.8.33",
+      candidateVersion: "2026.8.34",
+      timeoutSeconds: 1200,
+      expectedArgs: ["update", "--yes", "--json", "--no-restart", "--timeout", "1200"],
+      expectedPackageSpec: "openclaw",
+      expectedNpmTag: "extended-stable",
+    },
+  ])("routes packaged upgrades from the $label channel", (testCase) => {
+    const candidateUrl = "http://127.0.0.1:49152/openclaw-current.tgz";
+    const updateCommand = buildPackagedUpgradeUpdateCommand({
+      env: {
         NPM_CONFIG_REGISTRY: "http://127.0.0.1:49152",
         FOO: "bar",
-        OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS: "1",
-        NODE_DISABLE_COMPILE_CACHE: "1",
-        ...(extended
-          ? { OPENCLAW_UPDATE_PACKAGE_SPEC: "openclaw", NPM_CONFIG_TAG: "extended-stable" }
-          : {}),
-      });
-    },
-  );
+        NODE_COMPILE_CACHE: "/tmp/stale-openclaw-cache",
+        OPENCLAW_DISABLE_BUNDLED_PLUGIN_POSTINSTALL: "1",
+      },
+      candidateUrl,
+      candidateVersion: testCase.candidateVersion,
+      timeoutSeconds: testCase.timeoutSeconds,
+      baselineVersion: testCase.baselineVersion,
+    });
+    expect(updateCommand.args).toEqual(testCase.expectedArgs);
+    expect(updateCommand.env.OPENCLAW_UPDATE_PACKAGE_SPEC).toBe(testCase.expectedPackageSpec);
+    expect(updateCommand.env.NPM_CONFIG_TAG).toBe(testCase.expectedNpmTag);
+    expect(updateCommand.env).toEqual({
+      NPM_CONFIG_REGISTRY: "http://127.0.0.1:49152",
+      FOO: "bar",
+      OPENCLAW_ALLOW_OLDER_BINARY_DESTRUCTIVE_ACTIONS: "1",
+      NODE_DISABLE_COMPILE_CACHE: "1",
+      ...(testCase.expectedPackageSpec
+        ? {
+            OPENCLAW_UPDATE_PACKAGE_SPEC: testCase.expectedPackageSpec,
+            NPM_CONFIG_TAG: testCase.expectedNpmTag,
+          }
+        : {}),
+    });
+  });
 
   it("uses forced shutdown only when the installed gateway supports it", () => {
     expect(buildGatewayStopArgsFromHelpText("--force  Skip confirmation")).toEqual([
@@ -918,21 +944,27 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
     const outputDir = join(root, "output");
     mkdirSync(join(sourceDir, "packages", "ai"), { recursive: true });
     mkdirSync(logsDir, { recursive: true });
-    writeJson(join(sourceDir, "package.json"), {
-      name: "openclaw",
-      version: "2026.8.1",
-      dependencies: {
-        "@openclaw/ai": "workspace:*",
-        "partial-json": "0.1.8",
-      },
-    });
-    writeJson(join(sourceDir, "packages", "ai", "package.json"), {
-      name: "@openclaw/ai",
-      version: "2026.8.1",
-      dependencies: {
-        "partial-json": "0.1.7",
-      },
-    });
+    writeFileSync(
+      join(sourceDir, "package.json"),
+      JSON.stringify({
+        name: "openclaw",
+        version: "2026.8.1",
+        dependencies: {
+          "@openclaw/ai": "workspace:*",
+          "partial-json": "0.1.8",
+        },
+      }),
+    );
+    writeFileSync(
+      join(sourceDir, "packages", "ai", "package.json"),
+      JSON.stringify({
+        name: "@openclaw/ai",
+        version: "2026.8.1",
+        dependencies: {
+          "partial-json": "0.1.7",
+        },
+      }),
+    );
     writeFileSync(
       join(sourceDir, "CHANGELOG.md"),
       "# Changelog\n\n## Unreleased\n\n- Validate source metadata before installing dependencies.\n",
@@ -1000,28 +1032,40 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
   ])(
     "streams release artifacts from the static file server: $fileName",
     async ({ fileName, requestPath }) => {
-      const payload = Buffer.from(`artifact-head\n${"x".repeat(1024 * 1024)}\nartifact-tail`);
-      await withStaticArtifact(
-        payload,
-        async (server, logPath) => {
-          const response = await fetch(server.url);
-          const body = Buffer.from(await response.arrayBuffer());
+      const dir = tempDirs.make("openclaw-cross-os-static-server-");
+      const filePath = join(dir, fileName);
+      const logPath = join(dir, "server.log");
+      let server: Awaited<ReturnType<typeof startStaticFileServer>> | undefined;
 
-          expect(response.status).toBe(200);
-          expect(response.headers.get("content-length")).toBe(String(payload.length));
-          expect(response.headers.get("content-type")).toBe("application/octet-stream");
-          expect(body.equals(payload)).toBe(true);
-          await server.close();
-          expect(readFileSync(logPath, "utf8")).toContain(`GET ${requestPath}`);
-        },
-        fileName,
-        false,
-      );
+      try {
+        const payload = Buffer.from(`artifact-head\n${"x".repeat(1024 * 1024)}\nartifact-tail`);
+        writeFileSync(filePath, payload);
+
+        server = await startStaticFileServer({ filePath, logPath });
+        const response = await fetch(server.url);
+        const body = Buffer.from(await response.arrayBuffer());
+
+        expect(response.status).toBe(200);
+        expect(response.headers.get("content-length")).toBe(String(payload.length));
+        expect(response.headers.get("content-type")).toBe("application/octet-stream");
+        expect(body.equals(payload)).toBe(true);
+        await server.close();
+        expect(readFileSync(logPath, "utf8")).toContain(`GET ${requestPath}`);
+      } finally {
+        await server?.close();
+      }
     },
   );
 
   it("closes static release artifact sockets left by aborted clients", async () => {
-    await withStaticArtifact(Buffer.alloc(1024 * 1024, "x"), async (server) => {
+    const dir = tempDirs.make("openclaw-cross-os-static-server-close-");
+    const filePath = join(dir, "openclaw-2026.4.14.tgz");
+    const logPath = join(dir, "server.log");
+    let server: Awaited<ReturnType<typeof startStaticFileServer>> | undefined;
+
+    try {
+      writeFileSync(filePath, Buffer.alloc(1024 * 1024, "x"));
+      server = await startStaticFileServer({ filePath, logPath });
       const url = new URL(server.url);
       const socket = createNetConnection(Number(url.port), url.hostname);
       await new Promise<void>((resolve, reject) => {
@@ -1046,11 +1090,20 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
           throw new Error("socket close timed out");
         }),
       ]);
-    });
+    } finally {
+      await server?.close().catch(() => {});
+    }
   });
 
   it("flushes static release artifact logs before close resolves", async () => {
-    await withStaticArtifact(Buffer.alloc(128, "x"), async (server, logPath) => {
+    const dir = tempDirs.make("openclaw-cross-os-static-server-log-flush-");
+    const filePath = join(dir, "openclaw-2026.4.14.tgz");
+    const logPath = join(dir, "server.log");
+    let server: Awaited<ReturnType<typeof startStaticFileServer>> | undefined;
+
+    try {
+      writeFileSync(filePath, Buffer.alloc(128, "x"));
+      server = await startStaticFileServer({ filePath, logPath });
       const marker = `flush-${"x".repeat(512)}-done`;
 
       for (let index = 0; index < 8; index += 1) {
@@ -1058,8 +1111,12 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
         await response.text();
       }
       await server.close();
+      server = undefined;
+
       expect(readFileSync(logPath, "utf8")).toContain(`${marker}-7`);
-    });
+    } finally {
+      await server?.close().catch(() => {});
+    }
   });
 
   it("does not preload static release artifacts before serving them", () => {
@@ -1101,11 +1158,25 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
         gatewayPort: 34111,
         skipHealth: true,
       }),
-    ).toEqual(
-      "onboard --non-interactive --mode local --auth-choice openai-api-key --secret-input-mode ref --gateway-port 34111 --gateway-bind loopback --skip-skills --skip-bootstrap --accept-risk --json --skip-health".split(
-        " ",
-      ),
-    );
+    ).toEqual([
+      "onboard",
+      "--non-interactive",
+      "--mode",
+      "local",
+      "--auth-choice",
+      "openai-api-key",
+      "--secret-input-mode",
+      "ref",
+      "--gateway-port",
+      "34111",
+      "--gateway-bind",
+      "loopback",
+      "--skip-skills",
+      "--skip-bootstrap",
+      "--accept-risk",
+      "--json",
+      "--skip-health",
+    ]);
   });
 
   it("runs the installed browser override import smoke only on native Windows", () => {
@@ -1132,22 +1203,27 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
   });
 
   it("does not trust ambient ComSpec when wrapping Windows cmd shims", () => {
-    const originalEnv = { ComSpec: process.env.ComSpec, SystemRoot: process.env.SystemRoot };
+    const originalComSpec = process.env.ComSpec;
+    const originalSystemRoot = process.env.SystemRoot;
     try {
       process.env.ComSpec = String.raw`C:\Users\test\bin\cmd.exe`;
       process.env.SystemRoot = String.raw`D:\Windows`;
+
       expect(
         resolveCommandSpawnInvocation(String.raw`C:\Program Files\nodejs\npm.cmd`, ["--version"], {
           platform: "win32",
         }).command,
       ).toBe(String.raw`D:\Windows\System32\cmd.exe`);
     } finally {
-      for (const [key, value] of Object.entries(originalEnv)) {
-        if (value === undefined) {
-          delete process.env[key];
-        } else {
-          process.env[key] = value;
-        }
+      if (originalComSpec === undefined) {
+        delete process.env.ComSpec;
+      } else {
+        process.env.ComSpec = originalComSpec;
+      }
+      if (originalSystemRoot === undefined) {
+        delete process.env.SystemRoot;
+      } else {
+        process.env.SystemRoot = originalSystemRoot;
       }
     }
   });
@@ -1270,7 +1346,19 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
       let releaseAndWait = () => command;
       try {
         const logPath = join(dir, "timeout.log");
-        const parentScript = descendantProgram();
+        const childScript = "setInterval(() => {}, 1000); process.send('ready');";
+        const parentScript = [
+          "import { spawn } from 'node:child_process';",
+          "import fs from 'node:fs';",
+          fixtureReceiptClientSource(receipts.endpoint),
+          `const child = spawn(process.execPath, ['-e', ${JSON.stringify(childScript)}], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });`,
+          "child.once('message', () => {",
+          "fs.writeFileSync(process.env.OPENCLAW_TEST_CHILD_PID, String(child.pid));",
+          "sendReceipt(process.env.OPENCLAW_TEST_CHILD_PID, 'ready');",
+          "child.disconnect();",
+          "});",
+          "setInterval(() => {}, 1000);",
+        ].join("");
 
         releaseAndWait = startProcessWatchdogFixture(() => {
           command = runCommand(process.execPath, ["--input-type=module", "-e", parentScript], {
@@ -1290,7 +1378,12 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
         expect(readFileSync(logPath, "utf8")).toContain("timeout command=");
       } finally {
         await releaseAndWait().catch(() => {});
-        killRecordedDescendant(childPidPath);
+        const childPid = existsSync(childPidPath)
+          ? Number.parseInt(readFileSync(childPidPath, "utf8"), 10)
+          : 0;
+        if (childPid && isProcessAlive(childPid)) {
+          process.kill(childPid, "SIGKILL");
+        }
       }
     }));
 
@@ -1312,7 +1405,23 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
       let completion: ReturnType<typeof observeExit> | undefined;
 
       try {
-        const parentScript = descendantProgram(stubborn, true);
+        const childScript = stubborn
+          ? "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); process.send('ready');"
+          : "setInterval(() => {}, 1000); process.send('ready');";
+        const parentScript = [
+          "import { spawn } from 'node:child_process';",
+          "import fs from 'node:fs';",
+          fixtureReceiptClientSource(receipts.endpoint),
+          `const child = spawn(process.execPath, ['-e', ${JSON.stringify(childScript)}], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });`,
+          "child.once('message', () => {",
+          "process.stdout.write('signal cleanup log sentinel\\n', () => {",
+          "  fs.writeFileSync(process.env.OPENCLAW_TEST_CHILD_PID, String(child.pid));",
+          "  sendReceipt(process.env.OPENCLAW_TEST_CHILD_PID, 'ready');",
+          "  child.disconnect();",
+          "});",
+          "});",
+          "setInterval(() => {}, 1000);",
+        ].join("");
         const runnerScript = [
           `import { runCommand } from ${JSON.stringify(scriptUrl)};`,
           `await runCommand(process.execPath, ['--input-type=module', '-e', ${JSON.stringify(parentScript)}], {`,
@@ -1355,7 +1464,12 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
           runner.kill("SIGTERM");
         }
         await completion?.catch(() => {});
-        killRecordedDescendant(childPidPath, childPid);
+        childPid ??= existsSync(childPidPath)
+          ? Number.parseInt(readFileSync(childPidPath, "utf8"), 10)
+          : undefined;
+        if (childPid !== undefined && isProcessAlive(childPid)) {
+          process.kill(childPid, "SIGKILL");
+        }
       }
     }),
   );
@@ -1367,7 +1481,7 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
     const cliDir = join(homeDir, ".local", "bin");
     mkdirSync(distDir, { recursive: true });
     mkdirSync(cliDir, { recursive: true });
-    writeJson(join(packageRoot, "package.json"), { name: "openclaw" });
+    writeFileSync(join(packageRoot, "package.json"), JSON.stringify({ name: "openclaw" }));
     writeFileSync(join(distDir, "entry.js"), "#!/usr/bin/env node\n");
 
     expect(
@@ -1601,6 +1715,27 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
     ).toBe(false);
   });
 
+  it("skips the packaged upgrade status probe after the Windows fallback install", () => {
+    expect(
+      shouldRunPackagedUpgradeStatusProbe({
+        platform: "win32",
+        usedWindowsPackagedUpgradeFallback: true,
+      }),
+    ).toBe(false);
+    expect(
+      shouldRunPackagedUpgradeStatusProbe({
+        platform: "win32",
+        usedWindowsPackagedUpgradeFallback: false,
+      }),
+    ).toBe(true);
+    expect(
+      shouldRunPackagedUpgradeStatusProbe({
+        platform: "linux",
+        usedWindowsPackagedUpgradeFallback: true,
+      }),
+    ).toBe(true);
+  });
+
   it.each([
     { label: "shipped baseline", recoverable: true },
     { label: "first fixed release", baselineVersion: "2026.9.7" },
@@ -1626,22 +1761,24 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
   });
 
   it("verifies the Windows packaged-upgrade fallback installed the candidate", () => {
-    for (const [installedVersion, error] of [
-      ["2026.5.4-beta.1", undefined],
-      ["2026.5.3", /expected 2026\.5\.4-beta\.1/u],
-      ["", /installed unknown/u],
-    ] as const) {
-      const verify = () =>
-        verifyWindowsPackagedUpgradeFallbackInstall({
-          installedVersion,
-          candidateVersion: "2026.5.4-beta.1",
-        });
-      if (error) {
-        expect(verify).toThrow(error);
-      } else {
-        expect(verify).not.toThrow();
-      }
-    }
+    expect(() =>
+      verifyWindowsPackagedUpgradeFallbackInstall({
+        installedVersion: "2026.5.4-beta.1",
+        candidateVersion: "2026.5.4-beta.1",
+      }),
+    ).not.toThrow();
+    expect(() =>
+      verifyWindowsPackagedUpgradeFallbackInstall({
+        installedVersion: "2026.5.3",
+        candidateVersion: "2026.5.4-beta.1",
+      }),
+    ).toThrow(/expected 2026\.5\.4-beta\.1/u);
+    expect(() =>
+      verifyWindowsPackagedUpgradeFallbackInstall({
+        installedVersion: "",
+        candidateVersion: "2026.5.4-beta.1",
+      }),
+    ).toThrow(/installed unknown/u);
   });
 
   it("only treats pinned baseline specs as exact installer version assertions", () => {
@@ -1658,22 +1795,30 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
         ? join(prefixDir, "node_modules", "openclaw")
         : join(prefixDir, "lib", "node_modules", "openclaw");
     mkdirSync(packageRoot, { recursive: true });
-    writeJson(join(packageRoot, "package.json"), {
-      name: "openclaw",
-      version: "2026.4.10",
-    });
+    writeFileSync(
+      join(packageRoot, "package.json"),
+      JSON.stringify({
+        name: "openclaw",
+        version: "2026.4.10",
+      }),
+      "utf8",
+    );
 
     expect(readInstalledVersion(prefixDir)).toBe("2026.4.10");
   });
 
   it("treats missing package scripts as optional in older refs", () => {
     const packageRoot = tempDirs.make("openclaw-cross-os-scripts-");
-    writeJson(join(packageRoot, "package.json"), {
-      name: "openclaw",
-      scripts: {
-        build: "pnpm build",
-      },
-    });
+    writeFileSync(
+      join(packageRoot, "package.json"),
+      JSON.stringify({
+        name: "openclaw",
+        scripts: {
+          build: "pnpm build",
+        },
+      }),
+      "utf8",
+    );
 
     expect(packageHasScript(packageRoot, "build")).toBe(true);
     expect(packageHasScript(packageRoot, "ui:build")).toBe(false);
