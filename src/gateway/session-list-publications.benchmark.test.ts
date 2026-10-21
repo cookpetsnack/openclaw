@@ -1,4 +1,3 @@
-import { channel } from "node:diagnostics_channel";
 import { expect, it, vi } from "vitest";
 import { setRuntimeConfigSnapshot } from "../config/config.js";
 import { appendTranscriptEventsInTransaction } from "../config/sessions/session-accessor.sqlite-transcript-store.js";
@@ -18,7 +17,7 @@ import { writeResidentEntries } from "./session-utils.perf.test-support.js";
 import type { SessionsListResult } from "./session-utils.types.js";
 
 it.runIf(process.env.OPENCLAW_SESSION_PUBLICATIONS_BENCH === "1")(
-  "measures 8,000 resident rows with ten appends and three list calls per simulated second",
+  "reuses selection over 8,000 rows with ten appends and three list calls per simulated second",
   () =>
     withOpenClawTestState({ scenario: "minimal" }, async () => {
       const cfg = {
@@ -39,19 +38,8 @@ it.runIf(process.env.OPENCLAW_SESSION_PUBLICATIONS_BENCH === "1")(
       const release = retainSessionListForegroundWork();
       const projection = await createSessionRowProjection({ cfg, modelCatalog: [] });
       const context = bindSessionRowProjection(requestContext(cfg), () => projection);
-      const diagnostics = channel("openclaw.session.list");
-      const samples: {
-        prepareThreadCpuMs: number;
-        rowThreadCpuMs: number;
-        responseThreadCpuMs: number;
-        phaseDurationsMs: Record<string, number>;
-      }[] = [];
-      const collect = (sample: unknown) => samples.push(sample as (typeof samples)[number]);
-      const cpuSamples: number[] = [];
       const scans = vi.spyOn(projection, "selectEntries");
-      let calls = 0;
       const rpc = async (client: (typeof clients)[number]) => {
-        const cpu = process.threadCpuUsage();
         await sessionReadHandlers["sessions.list"]!({
           req: { type: "req", id: "benchmark", method: "sessions.list" },
           params: {},
@@ -66,9 +54,6 @@ it.runIf(process.env.OPENCLAW_SESSION_PUBLICATIONS_BENCH === "1")(
             JSON.stringify(page);
           },
         });
-        const used = process.threadCpuUsage(cpu);
-        cpuSamples.push((used.user + used.system) / 1_000);
-        calls++;
       };
       try {
         await projection.ensureMaterialized();
@@ -77,10 +62,7 @@ it.runIf(process.env.OPENCLAW_SESSION_PUBLICATIONS_BENCH === "1")(
             await rpc(client);
           }
         }
-        calls = 0;
-        cpuSamples.length = 0;
         scans.mockClear();
-        diagnostics.subscribe(collect);
         vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
         for (let tick = 0; tick < 240; tick++) {
           const index = 7_997 + (tick % 3);
@@ -108,26 +90,8 @@ it.runIf(process.env.OPENCLAW_SESSION_PUBLICATIONS_BENCH === "1")(
             await rpc(clients[clientIndex]!);
           }
         }
-        const mean = (values: number[]) =>
-          values.reduce((sum, value) => sum + value, 0) / values.length;
-        const broadScans = scans.mock.calls.filter(([query]) => !query?.key).length;
-        console.log(
-          JSON.stringify({
-            rows: 8_000,
-            appends: 240,
-            calls,
-            broadScans,
-            selectionCacheHitRate: 1 - broadScans / calls,
-            handlerCpuMs: mean(cpuSamples),
-            prepareCpuMs: mean(samples.map((sample) => sample.prepareThreadCpuMs)),
-            rowCpuMs: mean(samples.map((sample) => sample.rowThreadCpuMs)),
-            responseCpuMs: mean(samples.map((sample) => sample.responseThreadCpuMs)),
-            handlerExitMs: mean(samples.map((sample) => sample.phaseDurationsMs.handlerExit ?? 0)),
-          }),
-        );
-        expect(broadScans).toBe(0);
+        expect(scans.mock.calls.filter(([query]) => !query?.key)).toHaveLength(0);
       } finally {
-        diagnostics.unsubscribe(collect);
         scans.mockRestore();
         projection.dispose();
         release();

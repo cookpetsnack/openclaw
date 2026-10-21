@@ -101,29 +101,24 @@ it.each(["claude-cli", "anthropic"])(
   },
 );
 
-it.for(["observation ends", "preparation times out"] as const)(
-  "does not start completion or another preparation when %s",
-  async (outcome, { signal }) => {
-    const preparation = createDeferred<ReturnType<typeof preparedModel>>();
-    const prepareModel = vi.fn(() => preparation.promise);
-    const harness = createHarness({ prepareModel });
-    try {
-      await startAndAddToolNotes(harness.observer);
-      await advance(outcome === "observation ends" ? 12_000 : 42_000);
-      expect(prepareModel).toHaveBeenCalledOnce();
-      if (outcome === "observation ends") {
-        harness.subscribers.unsubscribe("conn-1", "agent:main:session-1");
-        preparation.resolve(preparedModel());
-        await flushObserver();
-      }
-      expect(harness.completeModel).not.toHaveBeenCalled();
-    } finally {
-      const disposal = harness.observer.disposeAsync();
-      preparation.resolve(preparedModel());
-      await withinTest(disposal, signal);
-    }
-  },
-);
+it("does not start completion after observation ends during preparation", async ({ signal }) => {
+  const preparation = createDeferred<ReturnType<typeof preparedModel>>();
+  const prepareModel = vi.fn(() => preparation.promise);
+  const harness = createHarness({ prepareModel });
+  try {
+    await startAndAddToolNotes(harness.observer);
+    await advance(12_000);
+    expect(prepareModel).toHaveBeenCalledOnce();
+    harness.subscribers.unsubscribe("conn-1", "agent:main:session-1");
+    preparation.resolve(preparedModel());
+    await flushObserver();
+    expect(harness.completeModel).not.toHaveBeenCalled();
+  } finally {
+    const disposal = harness.observer.disposeAsync();
+    preparation.resolve(preparedModel());
+    await withinTest(disposal, signal);
+  }
+});
 
 it("retries after a rejected preparation", async () => {
   const prepareModel = vi

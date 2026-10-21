@@ -1,6 +1,5 @@
 import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 import type { SessionObserverDigest } from "../../packages/gateway-protocol/src/schema/sessions.js";
-import { createSessionActivityNoteState } from "../agents/session-activity-notes.js";
 import { setRuntimeConfigSnapshot } from "../config/runtime-snapshot.js";
 import {
   loadSessionEntryReadOnly,
@@ -13,9 +12,9 @@ import {
   defaultPersistDigest,
   normalizeSessionObserverModelOutput,
   synthesizeSessionObserverTerminalDigest,
-  type SessionObserverState,
 } from "./session-observer-model.js";
 import { createSessionObserverDigestPersister } from "./session-observer-persistence.js";
+import { observerState } from "./session-observer-state.test-support.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -61,25 +60,6 @@ function observeRows() {
   const changes: SessionRowChange[] = [];
   onTestFinished(sessionChanges.subscribe((change) => changes.push(change)));
   return changes;
-}
-
-function observerState(overrides: Partial<SessionObserverState> = {}): SessionObserverState {
-  return {
-    ...createSessionActivityNoteState(),
-    ...scope,
-    sessionId,
-    runId: "run-1",
-    startedAt: 0,
-    lastActivityAt: 0,
-    lastRunAt: 0,
-    revision: 0,
-    digestCount: 0,
-    consecutiveFailures: 0,
-    lastDigestNoteSequence: 0,
-    inFlight: false,
-    finalPending: false,
-    ...overrides,
-  };
 }
 
 const modelDigest = {
@@ -157,7 +137,7 @@ it("publishes a live/preamble persist", () =>
       onMissingEntry: () => {},
       onError: () => {},
     });
-    await persist(observerState(), digest(1), true);
+    await persist(observerState({ sessionId, utilityModelRef: undefined }), digest(1), true);
     expect(changes).toContainEqual(expect.objectContaining(scope));
   }));
 
@@ -167,7 +147,14 @@ it("publishes terminal-digest synthesis through the same seam", () =>
     const changes = observeRows();
     vi.spyOn(Date, "now").mockReturnValue(1);
     const terminal = await synthesizeSessionObserverTerminalDigest({
-      source: { state: observerState({ previousDigest: digest(1), terminalHealth: "done" }) },
+      source: {
+        state: observerState({
+          sessionId,
+          utilityModelRef: undefined,
+          previousDigest: digest(1),
+          terminalHealth: "done",
+        }),
+      },
       readSession: read,
       persistDigest: defaultPersistDigest,
     });

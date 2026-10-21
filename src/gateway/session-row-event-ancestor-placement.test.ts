@@ -23,7 +23,7 @@ import {
   projectWorkerSessionPlacement,
 } from "./worker-environments/placement-projector.js";
 import { createWorkerSessionPlacementStore } from "./worker-environments/placement-store.js";
-import { seedAttachedPlacementEnvironment } from "./worker-environments/placement-test-fixtures.js";
+import { advancePlacementFixtureToActive } from "./worker-environments/placement-test-fixtures.js";
 
 afterEach(() => vi.restoreAllMocks());
 
@@ -71,34 +71,16 @@ it("keeps cold archived ancestor placement and moves through child-event recipie
       });
     const rootPlacement = await dispatch("root");
     await dispatch("unused");
-    seedAttachedPlacementEnvironment(database, {
-      environmentId: "ancestor-environment",
-      sessionId: "parent",
-      ownerEpoch: 7,
-    });
-    let parentPlacement = await dispatch("parent");
-    for (const step of [
-      { to: "provisioning", patch: { environmentId: "ancestor-environment" } },
-      { to: "syncing", patch: { workerBundleHash: "a".repeat(64) } },
+    const parentPlacement = await advancePlacementFixtureToActive(
+      placements,
+      database,
+      { sessionId: "parent", sessionKey: parent, agentId: "main" },
       {
-        to: "starting",
-        patch: {
-          workspaceBaseManifestRef: `sha256:${"b".repeat(64)}`,
-          remoteWorkspaceDir: "/workspace",
-        },
+        environmentId: "ancestor-environment",
+        seedEnvironment: "before-dispatch",
+        remoteWorkspaceDir: "/workspace",
       },
-      { to: "active", patch: { activeOwnerEpoch: 7 } },
-    ] as const) {
-      parentPlacement = await placements.transition({
-        sessionId: "parent",
-        from: parentPlacement.state,
-        expectedGeneration: parentPlacement.generation,
-        ...step,
-      });
-    }
-    if (parentPlacement.state !== "active") {
-      throw new Error("Expected active ancestor fixture");
-    }
+    );
     const move = await placements.beginPlacementMove({
       sessionId: "parent",
       source: {

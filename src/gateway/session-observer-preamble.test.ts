@@ -1,24 +1,15 @@
 import { afterEach, beforeEach, expect, it, onTestFinished, vi } from "vitest";
-import { createSessionActivityNoteState } from "../agents/session-activity-notes.js";
 import {
   createDormantSessionObserverRun,
   type SessionObserverState,
 } from "./session-observer-model.js";
 import { createSessionObserverPreamblePublisher } from "./session-observer-preamble.js";
+import { observerState } from "./session-observer-state.test-support.js";
 
 function state(headline: string): SessionObserverState {
-  return {
-    ...createSessionActivityNoteState(),
-    sessionKey: "agent:main:session-1",
-    runId: "run-1",
-    agentId: "main",
-    startedAt: 0,
-    lastActivityAt: 0,
-    lastRunAt: 0,
+  return observerState({
+    utilityModelRef: undefined,
     revision: 1,
-    digestCount: 0,
-    consecutiveFailures: 0,
-    lastDigestNoteSequence: 0,
     previousDigest: {
       sessionKey: "agent:main:session-1",
       runId: "run-1",
@@ -27,9 +18,7 @@ function state(headline: string): SessionObserverState {
       headline,
       health: "on-track",
     },
-    inFlight: false,
-    finalPending: false,
-  };
+  });
 }
 
 function fixture(
