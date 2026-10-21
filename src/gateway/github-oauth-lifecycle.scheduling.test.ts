@@ -2,7 +2,10 @@ import { afterEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as githubRecords from "../agents/github-oauth-records.js";
 import { createDeferredCore } from "../shared/deferred.js";
-import { closeOpenClawStateDatabaseForTest } from "../state/openclaw-state-db.js";
+import {
+  closeOpenClawStateDatabaseForTest,
+  openOpenClawStateDatabase,
+} from "../state/openclaw-state-db.js";
 import * as userGitHubConnections from "../state/user-github-connections.js";
 import { ensureCanonicalUserProfileForEmail } from "../state/user-profile-writes.js";
 import {
@@ -81,6 +84,35 @@ it("refreshes once after sleep while personal maintenance is pending, then stops
   } finally {
     personal.resolve();
     await initialWake;
+    await lifecycle.stop();
+  }
+});
+
+it("skips empty OAuth inventories until a committed write makes work available", async () => {
+  vi.stubEnv("OPENCLAW_STATE_DIR", tempDirs.make("openclaw-github-empty-oauth-"));
+  vi.spyOn(Date, "now").mockReturnValue(NOW);
+  openOpenClawStateDatabase();
+  const devices = vi.spyOn(githubRecords, "listGitHubDeviceAuthorizationRecords");
+  const records = vi.spyOn(githubRecords, "listGitHubOAuthRecords");
+  const time = createGatewaySchedulerClock(NOW);
+  const lifecycle = createGitHubOAuthLifecycle({
+    getConfig: () => configForScope("system"),
+    warn: vi.fn(),
+    scheduler: createTestGatewayScheduler(time.clock),
+  });
+  vi.spyOn(lifecycle.personal, "maintain").mockResolvedValue(undefined);
+  try {
+    await lifecycle.maintain();
+    await lifecycle.maintain();
+    expect(devices).toHaveBeenCalledOnce();
+    expect(records).toHaveBeenCalledOnce();
+
+    await githubRecords.writeGitHubOAuthRecord(oauthRecord(OLD_PROFILE));
+    await lifecycle.maintain();
+    expect(devices).toHaveBeenCalledTimes(2);
+    expect(records).toHaveBeenCalledTimes(2);
+    expect(await githubRecords.inspectGitHubOAuthRecord(OLD_PROFILE)).toEqual({ state: "missing" });
+  } finally {
     await lifecycle.stop();
   }
 });

@@ -1,4 +1,4 @@
-import { expect, it } from "vitest";
+import { expect, it, vi } from "vitest";
 import { observeHostDataSql } from "../../test/helpers/sqlite-statement-execution-counter.js";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.sqlite-entry.js";
 import type { SessionEntry } from "../config/sessions/types.js";
@@ -74,5 +74,29 @@ it("prepares complete Gateway entries while preserving main aliases and exact-ro
     expect((await read()).store[childKey]?.label).toBe("Changed in process");
     seedChild({ updatedAt: 3, parentSessionKey: "agent:main:other" });
     expect((await read()).store[childKey]).toBeUndefined();
+  });
+});
+
+it("rechecks caller authority before returning prepared Gateway metadata", async () => {
+  await withOpenClawTestState({ scenario: "minimal" }, async ({ env }) => {
+    const cfg: OpenClawConfig = { agents: { ownership: "explicit", entries: { main: {} } } };
+    const sessionKey = "agent:main:primary";
+    replaceSessionEntrySync(
+      { agentId: "main", sessionKey, env },
+      { sessionId: "worker-authority", updatedAt: 1 },
+    );
+    const revoked = new Error("original caller revoked");
+    const assertActive = vi.fn();
+    const read = loadGatewaySessionEntryReadOnlyInWorker({
+      cfg,
+      key: sessionKey,
+      agentId: "main",
+      env,
+      assertActive,
+    });
+    assertActive.mockImplementation(() => {
+      throw revoked;
+    });
+    await expect(read).rejects.toBe(revoked);
   });
 });

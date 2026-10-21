@@ -1,7 +1,11 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
-import { seedDeviceAuthToken } from "../infra/device-auth-store.test-support.js";
+import { clearDeviceAuthToken, loadDeviceAuthToken } from "../infra/device-auth-store.js";
+import {
+  seedDeviceAuthToken,
+  readDeviceAuthTokenForTest,
+} from "../infra/device-auth-store.test-support.js";
 import {
   loadOrCreateDeviceIdentity,
   publicKeyRawBase64UrlFromPem,
@@ -13,10 +17,7 @@ import {
   detectLegacyDeviceAuth,
   migrateLegacyDeviceAuth,
 } from "../infra/state-migrations.device-auth.js";
-import {
-  withOpenClawTestState,
-  type OpenClawTestState,
-} from "../test-utils/openclaw-test-state.js";
+import { withOpenClawTestState } from "../test-utils/openclaw-test-state.js";
 
 const callGatewayMock = vi.hoisted(() => vi.fn());
 const noteMock = vi.hoisted(() => vi.fn());
@@ -26,25 +27,13 @@ vi.mock("../gateway/call.js", () => ({ callGateway: callGatewayMock }));
 // mock-isolation: capture user-facing notes without terminal output.
 vi.mock("../../packages/terminal-core/src/note.js", () => ({ note: noteMock }));
 
-function requireNoteMessage(included: string[] = [], excluded: string[] = []): string {
+function requireNoteMessage(): string {
   const message: unknown = noteMock.mock.calls[0]?.[0];
   if (typeof message !== "string") {
     throw new Error("expected doctor note message");
   }
-  for (const text of included) {
-    expect(message).toContain(text);
-  }
-  for (const text of excluded) {
-    expect(message).not.toContain(text);
-  }
   return message;
 }
-
-const withState = (run: (state: OpenClawTestState) => Promise<void>) =>
-  withOpenClawTestState(
-    { prefix: "openclaw-doctor-device-pairing-", env: { OPENCLAW_TEST_FAST: "1" } },
-    run,
-  );
 
 const localHealth = { cfg: { gateway: { mode: "local" as const } }, healthOk: false };
 const remoteHealth = { cfg: { gateway: { mode: "remote" as const } }, healthOk: true };
@@ -88,23 +77,26 @@ describe("noteDevicePairingHealth", () => {
       publicKey: string;
     }) => Promise<void>,
   ): Promise<void> {
-    await withState(async () => {
-      const identity = loadOrCreateDeviceIdentity();
-      const publicKey = publicKeyRawBase64UrlFromPem(identity.publicKeyPem);
-      const initial = await requestDevicePairing({
-        deviceId: identity.deviceId,
-        publicKey,
-        ...operatorRequest,
-      });
-      await approveDevicePairing(initial.request.requestId, { callerScopes: ["operator.read"] });
-      await run({ identity, publicKey });
-    });
+    await withOpenClawTestState(
+      { prefix: "openclaw-doctor-device-pairing-", env: { OPENCLAW_TEST_FAST: "1" } },
+      async () => {
+        const identity = loadOrCreateDeviceIdentity();
+        const publicKey = publicKeyRawBase64UrlFromPem(identity.publicKeyPem);
+        const initial = await requestDevicePairing({
+          deviceId: identity.deviceId,
+          publicKey,
+          ...operatorRequest,
+        });
+        await approveDevicePairing(initial.request.requestId, { callerScopes: ["operator.read"] });
+        await run({ identity, publicKey });
+      },
+    );
   }
 
-  async function localNote(included: string[] = [], excluded: string[] = []): Promise<void> {
+  async function localNote(): Promise<string> {
     await noteDevicePairingHealth(localHealth);
     expect(noteMock).toHaveBeenCalledTimes(1);
-    requireNoteMessage(included, excluded);
+    return requireNoteMessage();
   }
 
   beforeAll(async () => {
@@ -127,8 +119,12 @@ describe("noteDevicePairingHealth", () => {
         scopes: ["operator.admin"],
       });
 
-      await localNote(["Pending scope upgrade", "operator.admin", "openclaw devices approve"]);
+      const message = await localNote();
       expect(noteMock.mock.calls[0]?.[1]).toBe("Device pairing");
+      expect(message).toContain("Pending scope upgrade");
+      expect(message).toContain("operator.admin");
+      expect(message).toContain("openclaw devices approve");
+      expect(callGatewayMock).not.toHaveBeenCalled();
 
       const findings = await collectDevicePairingHealthFindings(localHealth);
       expect(findings).toMatchObject([
@@ -157,64 +153,95 @@ describe("noteDevicePairingHealth", () => {
   ] as const)(
     "warns about unimported %s in %s mode without changing it",
     async (file, mode, findingPath, requirement) => {
-      await withState(async (state) => {
-        const content =
-          requirement === "pairing-store-legacy-file" ? "{not-json}" : legacyDeviceAuthContents;
-        const sourcePath = await state.writeText(file, content);
-        const params = { cfg: { gateway: { mode } }, healthOk: false };
+      await withOpenClawTestState(
+        { prefix: "openclaw-doctor-device-pairing-", env: { OPENCLAW_TEST_FAST: "1" } },
+        async (state) => {
+          const content =
+            requirement === "pairing-store-legacy-file" ? "{not-json}" : legacyDeviceAuthContents;
+          const sourcePath = await state.writeText(file, content);
+          const params = { cfg: { gateway: { mode } }, healthOk: false };
 
-        const findings = await collectDevicePairingHealthFindings(params);
-        expect.soft(findings).toMatchObject([
-          {
-            checkId: "core/doctor/device-pairing",
-            severity: "warning",
-            path: findingPath,
-            requirement,
-            message: expect.stringContaining(
-              requirement === "pairing-store-legacy-file"
-                ? "has not been imported"
-                : "is still present",
-            ),
-            fixHint: expect.stringContaining("openclaw doctor --fix"),
-          },
-        ]);
-        await noteDevicePairingHealth(params);
-        expect.soft(noteMock).toHaveBeenCalledTimes(1);
-        expect(noteMock).toHaveBeenCalledWith(
-          expect.stringContaining(path.basename(sourcePath)),
-          "Device pairing",
-        );
-        requireNoteMessage([], ["synthetic-legacy-token"]);
-        expect(await fs.readFile(sourcePath, "utf8")).toBe(content);
-        await expect(fs.stat(state.statePath("state", "openclaw.sqlite"))).rejects.toMatchObject({
-          code: "ENOENT",
-        });
-      });
+          const findings = await collectDevicePairingHealthFindings(params);
+          expect.soft(findings).toMatchObject([
+            {
+              checkId: "core/doctor/device-pairing",
+              severity: "warning",
+              path: findingPath,
+              requirement,
+              message: expect.stringContaining(
+                requirement === "pairing-store-legacy-file"
+                  ? "has not been imported"
+                  : "is still present",
+              ),
+              fixHint: expect.stringContaining("openclaw doctor --fix"),
+            },
+          ]);
+          await noteDevicePairingHealth(params);
+          expect.soft(noteMock).toHaveBeenCalledTimes(1);
+          expect(noteMock).toHaveBeenCalledWith(
+            expect.stringContaining(path.basename(sourcePath)),
+            "Device pairing",
+          );
+          expect(requireNoteMessage()).not.toContain("synthetic-legacy-token");
+          expect(await fs.readFile(sourcePath, "utf8")).toBe(content);
+          await expect(fs.stat(state.statePath("state", "openclaw.sqlite"))).rejects.toMatchObject({
+            code: "ENOENT",
+          });
+        },
+      );
     },
   );
 
-  it("does not report retained imported device-auth JSON as migration debt", async () => {
-    await withState(async (state) => {
-      const sourcePath = await state.writeText(
-        "identity/device-auth.json",
-        legacyDeviceAuthContents,
-      );
-      const migrated = await migrateLegacyDeviceAuth({
-        detected: detectLegacyDeviceAuth({
-          stateDir: state.stateDir,
-          doctorOnlyStateMigrations: true,
-        }),
-        stateDir: state.stateDir,
-        env: state.env,
-      });
-      expect(migrated.warnings).toEqual([]);
-      const params = { cfg: { gateway: { mode: "remote" as const } }, healthOk: false };
-      const findings = await collectDevicePairingHealthFindings(params);
-      expect(findings).toEqual([]);
-      await noteDevicePairingHealth(params);
-      expect(noteMock).not.toHaveBeenCalled();
-      expect(await fs.readFile(sourcePath, "utf8")).toBe(legacyDeviceAuthContents);
-    });
+  it("retains imported device-auth JSON without reimporting a removed token", async () => {
+    await withOpenClawTestState(
+      { prefix: "openclaw-doctor-device-auth-debt-", env: { OPENCLAW_TEST_FAST: "1" } },
+      async (state) => {
+        const expectedToken = "synthetic-legacy-token";
+        const sourcePath = await state.writeText(
+          "identity/device-auth.json",
+          legacyDeviceAuthContents,
+        );
+        const readTokenRow = () => {
+          const entry = readDeviceAuthTokenForTest({
+            env: state.env,
+            deviceId: "synthetic-device",
+            role: "operator",
+          });
+          return entry ? { token: entry.token } : undefined;
+        };
+        const migrate = () =>
+          migrateLegacyDeviceAuth({
+            detected: detectLegacyDeviceAuth({
+              stateDir: state.stateDir,
+              doctorOnlyStateMigrations: true,
+            }),
+            stateDir: state.stateDir,
+            env: state.env,
+          });
+        expect((await migrate()).warnings).toEqual([]);
+        expect(readTokenRow()).toEqual({ token: expectedToken });
+        await expect(
+          loadDeviceAuthToken({ deviceId: "synthetic-device", role: "operator", env: state.env }),
+        ).resolves.toMatchObject({ token: expectedToken });
+        const params = { cfg: { gateway: { mode: "remote" as const } }, healthOk: false };
+        const findings = await collectDevicePairingHealthFindings(params);
+        expect(findings).toEqual([]);
+        await noteDevicePairingHealth(params);
+        expect(noteMock).not.toHaveBeenCalled();
+        expect(await fs.readFile(sourcePath, "utf8")).toBe(legacyDeviceAuthContents);
+        expect(readTokenRow()).toEqual({ token: expectedToken });
+        expect(
+          await clearDeviceAuthToken({
+            deviceId: "synthetic-device",
+            role: "operator",
+            env: state.env,
+          }),
+        ).toBe(true);
+        expect((await migrate()).changes).toEqual([]);
+        expect(readTokenRow()).toBeUndefined();
+        expect(await fs.readFile(sourcePath, "utf8")).toBe(legacyDeviceAuthContents);
+      },
+    );
   });
 
   it.each(["rotated token", "unapproved role", "revoked token"] as const)(
@@ -235,22 +262,18 @@ describe("noteDevicePairingHealth", () => {
         } else if (scenario === "revoked token") {
           await revokeDeviceToken({ deviceId, role: "operator" });
         }
+        const message = await localNote();
         if (scenario === "rotated token") {
-          await localNote(["stale device-token pattern", "openclaw devices rotate"]);
+          expect(message).toContain("stale device-token pattern");
+          expect(message).toContain("openclaw devices rotate");
         } else if (scenario === "unapproved role") {
-          await localNote(
-            [
-              "Local cached node device auth",
-              "role is no longer approved",
-              "remove the stale cached node auth entry",
-            ],
-            ["--role node"],
-          );
+          expect(message).toContain("Local cached node device auth");
+          expect(message).toContain("role is no longer approved");
+          expect(message).toContain("remove the stale cached node auth entry");
+          expect(message).not.toContain("--role node");
         } else {
-          await localNote(
-            ["has no active operator device token"],
-            ["no longer has a matching active gateway token"],
-          );
+          expect(message).toContain("has no active operator device token");
+          expect(message).not.toContain("no longer has a matching active gateway token");
         }
       });
     },
@@ -317,7 +340,7 @@ describe("noteDevicePairingHealth", () => {
 
     await noteDevicePairingHealth(remoteHealth);
 
-    requireNoteMessage(["req-gateway-1", "bad\\nname"], ["\u001b", "control-ui\tclient"]);
+    const message = requireNoteMessage();
     expect(callGatewayMock).toHaveBeenCalledExactlyOnceWith({
       method: "device.pair.list",
       timeoutMs: 5_000,
@@ -325,6 +348,10 @@ describe("noteDevicePairingHealth", () => {
       config: { gateway: { mode: "remote" } },
     });
     expect(noteMock).toHaveBeenCalledTimes(1);
+    expect(message).toContain("req-gateway-1");
+    expect(message).toContain("bad\\nname");
+    expect(message).not.toContain("\u001b");
+    expect(message).not.toContain("control-ui\tclient");
   });
 
   it("quotes untrusted device pairing fields in suggested commands", async () => {
@@ -357,9 +384,10 @@ describe("noteDevicePairingHealth", () => {
 
     await noteDevicePairingHealth(remoteHealth);
 
-    requireNoteMessage([
-      "openclaw devices remove 'device; echo pwn'",
+    const message = requireNoteMessage();
+    expect(message).toContain("openclaw devices remove 'device; echo pwn'");
+    expect(message).toContain(
       "openclaw devices rotate --device 'device; echo pwn' --role 'operator; touch /tmp/pwn'",
-    ]);
+    );
   });
 });
