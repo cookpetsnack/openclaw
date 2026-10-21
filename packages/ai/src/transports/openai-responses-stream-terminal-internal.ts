@@ -319,12 +319,17 @@ export function createResponsesTerminalController(params: {
               previous,
             );
             if (rendered.text !== block.text) {
+              const cursor = params.getLastTextBlock();
               appendText(
                 item,
                 tracked.contentIndex,
                 rendered,
                 tracked.completedProse !== previous.prose,
               );
+              if (cursor?.index !== tracked.contentIndex) {
+                // Enriching earlier output must not reopen its sequential collapse boundary.
+                params.setLastTextBlock(cursor);
+              }
             }
           }
           continue;

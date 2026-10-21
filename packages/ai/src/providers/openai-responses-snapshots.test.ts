@@ -301,3 +301,59 @@ it.each(["Hello.", "Changed.", "Hello. Changed."])(
     ]);
   },
 );
+
+it.each(["First. More.", "Other. More."])(
+  "keeps the terminal collapse cursor on the latest distinct message after an earlier citation: %s",
+  async (nextProse) => {
+    const { output, events, run } = captureResponses();
+    const first = messageDone("msg_1", "First.");
+    const other = messageDone("msg_2", "Other.");
+    const earlier = {
+      ...first.item,
+      content: [
+        {
+          type: "output_text",
+          text: "First.",
+          annotations: [
+            { type: "url_citation", url: "https://example.test/First", title: "First" },
+          ],
+        },
+      ],
+    };
+    await run([
+      messageAdded("msg_1"),
+      first,
+      messageAdded("msg_2"),
+      other,
+      {
+        ...completed,
+        response: {
+          ...completed.response,
+          output: [earlier, other.item, messageDone("msg_3", nextProse).item],
+        },
+      },
+    ]);
+    const annotated = "First.\n\n[First](https://example.test/First)";
+    const extendsLatest = nextProse === "Other. More.";
+    expect(output.content).toEqual([
+      textBlock("msg_1", annotated),
+      ...(extendsLatest
+        ? [textBlock("msg_3", nextProse)]
+        : [textBlock("msg_2", "Other."), textBlock("msg_3", nextProse)]),
+    ]);
+    expect(eventTrace(events)).toBe(
+      "text_start@0 text_end@0 text_start@1 text_end@1 text_delta@0 text_end@0 " +
+        (extendsLatest ? "text_end@1" : "text_start@2 text_end@2"),
+    );
+    expect(
+      events
+        .filter((event) => event.type === "text_end")
+        .map((event) => [event.contentIndex, event.content]),
+    ).toEqual([
+      [0, "First."],
+      [1, "Other."],
+      [0, annotated],
+      [extendsLatest ? 1 : 2, nextProse],
+    ]);
+  },
+);
