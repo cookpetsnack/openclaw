@@ -51,14 +51,6 @@ vi.mock("../channels/plugins/package-state-probes.js", async (importOriginal) =>
       if (params.channelId === "cache-channel") {
         return Boolean(params.env?.CACHE_CHANNEL_TOKEN?.trim());
       }
-      if (params.channelId === "irc") {
-        return Boolean(params.env?.IRC_HOST?.trim() && params.env?.IRC_NICK?.trim());
-      }
-      if (params.channelId === "slack") {
-        return ["SLACK_APP_TOKEN", "SLACK_BOT_TOKEN", "SLACK_USER_TOKEN"].some((key) =>
-          Boolean(params.env?.[key]?.trim()),
-        );
-      }
       return actual.hasBundledChannelPackageState(params);
     },
   };

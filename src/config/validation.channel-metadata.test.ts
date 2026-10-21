@@ -6,6 +6,7 @@ import {
   validateConfigObjectRawWithPlugins,
   validateConfigObjectWithPlugins,
 } from "./validation.js";
+import { validatedConfig } from "./validation.test-helpers.js";
 
 const mockLoadPluginManifestRegistry = vi.hoisted(() =>
   vi.fn((): PluginManifestRegistry => ({ diagnostics: [], plugins: [] })),
@@ -17,14 +18,6 @@ function registry(...plugins: PluginManifestRecord[]): PluginManifestRegistry {
 
 function install(...plugins: Parameters<typeof plugin>[0][]) {
   mockLoadPluginManifestRegistry.mockReturnValue(registry(...plugins.map(plugin)));
-}
-
-function validatedConfig(result: ReturnType<typeof validateConfigObjectWithPlugins>) {
-  expect(result.ok).toBe(true);
-  if (!result.ok) {
-    throw new Error("Expected valid config");
-  }
-  return result.config;
 }
 
 const objectSchema = (
