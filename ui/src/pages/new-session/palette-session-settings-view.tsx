@@ -61,8 +61,8 @@ export function PaletteSessionSettingsView(properties: {
   };
   let readAgentControls: (() => readonly HTMLElement[]) | undefined;
   let popover!: PopoverHandle;
-  const close = () => {
-    properties.options.preferences.retirePresentation();
+  const close = (preferences: SettingsOptions["preferences"]) => {
+    preferences.retirePresentation();
     setOpen(false);
     setPlaces(false);
     setQuery("");
@@ -98,7 +98,7 @@ export function PaletteSessionSettingsView(properties: {
   };
   onSettled(() => {
     const preferences = properties.options.preferences;
-    const unregister = properties.registerClose(close);
+    const unregister = properties.registerClose(() => close(preferences));
     return () => {
       preferences.retirePresentation();
       unregister();
@@ -125,7 +125,7 @@ export function PaletteSessionSettingsView(properties: {
       if (places()) {
         showPlaces(false);
       } else {
-        close();
+        close(properties.options.preferences);
         popover.overlay.trigger?.focus({ preventScroll: true });
       }
       return;
@@ -474,7 +474,7 @@ export function PaletteSessionSettingsView(properties: {
       class="palette-session-settings"
       placement="bottom-end"
       open={open()}
-      onOpenChange={(value) => (value ? setOpen(true) : close())}
+      onOpenChange={(value) => (value ? setOpen(true) : close(properties.options.preferences))}
     >
       <div class="palette-session-settings__content" ref={keydown}>
         {places() ? <SettingsPlaces /> : <SettingsSummary />}

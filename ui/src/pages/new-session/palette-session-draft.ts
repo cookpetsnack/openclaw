@@ -22,11 +22,25 @@ import { resolveNewSessionMentionDirectory } from "./mention-directory.ts";
 import { PaletteSessionPreferences } from "./palette-session-preferences.ts";
 import type { PaletteSessionPreference } from "./preferences.ts";
 import { captureSessionNoticeOwner, openSessionNoticeTarget } from "./session-notice-owner.ts";
+import type { SubmissionPresentation } from "./submission-action.ts";
 
 registerCommandPaletteEnglish();
 
 /** Launcher-local prompt and selections; never binds the full page's durable draft or handoff. */
 export class PaletteSessionDraft {
+  private submissionLifetimeValue = Promise.withResolvers<void>();
+  presentSubmit: SubmissionPresentation["presentSubmit"];
+  get submissionLifetime() {
+    return this.submissionLifetimeValue.promise;
+  }
+  private retireSubmissionPresentation() {
+    this.submissionLifetimeValue.resolve();
+    this.submissionLifetimeValue = Promise.withResolvers<void>();
+    this.callbacks.changed();
+  }
+  setSubmissionError(error: unknown) {
+    this.draft?.submission.setError(error instanceof Error ? error.message : String(error));
+  }
   private draft: NewSessionDraft | undefined;
   private data: NewSessionRouteData | undefined;
   private presentationScope: ReturnType<typeof gatewayPresentationScope> | undefined;
@@ -224,6 +238,7 @@ export class PaletteSessionDraft {
             closeMenusWithin(this.element);
           },
           onInvalidate: () => {
+            this.retireSubmissionPresentation();
             this.preferences.retirePresentation();
             this.connectMachine.close();
           },
@@ -245,6 +260,7 @@ export class PaletteSessionDraft {
   }
 
   close() {
+    this.retireSubmissionPresentation();
     this.preferences.retirePresentation();
     this.coldSubmit = undefined;
     const submission = this.draft?.submission;
@@ -267,7 +283,12 @@ export class PaletteSessionDraft {
     closeMenusWithin(this.element);
   }
 
-  async submit(): Promise<void> {
+  submit(): Promise<void> {
+    const operation = () => this.submitOwnedDraft();
+    return this.presentSubmit ? this.presentSubmit(operation) : operation();
+  }
+
+  private async submitOwnedDraft(): Promise<void> {
     this.synchronizePresentationScope();
     if (!this.read().open || this.coldSubmit || !this.hasPrompt || !this.draft) {
       return;
