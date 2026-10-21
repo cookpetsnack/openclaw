@@ -180,8 +180,9 @@ export function createResponsesTerminalController(params: {
   const appendText = (
     item: ResponseOutputMessage,
     initialIndex?: number,
-    rendered = renderResponsesMessageText(item.content ?? []),
+    initialRender = renderResponsesMessageText(item.content ?? []),
   ): number | undefined => {
+    let rendered = initialRender;
     let contentIndex = initialIndex;
     let text = rendered.text;
     const block = contentIndex === undefined ? undefined : blocks[contentIndex];
