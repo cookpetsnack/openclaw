@@ -160,6 +160,17 @@ function sdkCompletion(responseId: string, content: string): SdkResponse {
   return sdkEvents(completedEvent(responseId, content));
 }
 
+/** A completion without url_citation, for tool-flow tests whose replies cite nothing. */
+function sdkUncitedCompletion(responseId: string, content: string): SdkResponse {
+  const event = completedEvent(responseId, content);
+  for (const item of event.response.output) {
+    for (const part of item.content) {
+      part.annotations = [];
+    }
+  }
+  return sdkEvents(event);
+}
+
 function sdkEvents(...events: Array<Record<string, unknown>>): SdkResponse {
   return {
     data: (async function* () {
@@ -598,7 +609,7 @@ describe("native OpenAI Responses SSE continuation", () => {
           };
         })(),
       },
-      sdkCompletion("resp_final", "used lookup result"),
+      sdkUncitedCompletion("resp_final", "used lookup result"),
     );
     const agent = new Agent({
       initialState: {
@@ -647,11 +658,7 @@ describe("native OpenAI Responses SSE continuation", () => {
       expect(agent.state.messages.at(-1)).toMatchObject({
         role: "assistant",
         stopReason: "stop",
-        content: [
-          expect.objectContaining({
-            text: "used lookup result\n\n[source](https://example.test/source)",
-          }),
-        ],
+        content: [expect.objectContaining({ text: "used lookup result" })],
       });
     } finally {
       releaseTool.resolve();
@@ -680,7 +687,7 @@ describe("native OpenAI Responses SSE continuation", () => {
         { type: "response.output_item.done", output_index: 0, item: call },
         { ...completed, response: { ...completed.response, output: [call] } },
       ),
-      sdkCompletion("resp_final", "used lookup result"),
+      sdkUncitedCompletion("resp_final", "used lookup result"),
     );
     // plugins is synchronous but cannot collect async results (cron surfaces lack sessions_yield).
     const agent = new Agent({
