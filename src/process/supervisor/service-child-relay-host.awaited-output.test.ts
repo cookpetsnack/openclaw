@@ -1,6 +1,7 @@
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferred, withTestTimeout } from "../../../test/helpers/promise.js";
+import { ProcessOutputIncompleteError } from "../decoded-output.js";
 import {
   closeStub,
   mockWritableRelay,
@@ -10,6 +11,7 @@ import {
 } from "./service-child-relay-host.fixture.test-support.js";
 import { createServiceChildRelayAdapter as startServiceChildRelayAdapter } from "./service-child-relay-host.js";
 import { createProcessSupervisor } from "./supervisor.js";
+import type { AwaitedStdoutConsumer } from "./types.js";
 
 const mocks = vi.hoisted(() => ({ spawn: vi.fn() }));
 vi.mock("node:child_process", async (importOriginal) => ({
@@ -129,6 +131,65 @@ it.each([false, true])(
       stub.emitExit(0);
       await results;
       adapter.dispose();
+    }
+  },
+);
+
+it.each(["drain", "consumer"] as const)(
+  "reports hard-deadline output loss without hiding the root result (%s)",
+  async (mode) => {
+    const stub = mockWritableRelay((child) => mocks.spawn.mockReturnValue(child), "darwin");
+    cleanups.push(() => closeStub(stub));
+    const starting = startServiceChildRelayAdapter({
+      ...relayDefaults,
+      stdoutConsumption: "awaited",
+    });
+    const { emit } = relayPeer(stub);
+    emit({ type: "ready", commandPid: 1234, anchorPid: 1235 });
+    const { adapter, ready } = await starting;
+    await ready;
+    const awaitedAdapter = adapter as typeof adapter & AwaitedStdoutConsumer;
+    const release = createDeferred();
+    const entered = createDeferred();
+    const consumed =
+      mode === "consumer"
+        ? awaitedAdapter.consumeStdout(async () => {
+            entered.resolve();
+            await release.promise;
+          })
+        : undefined;
+    if (consumed) {
+      stub.stdout.write("accepted tail");
+      await entered.promise;
+    }
+    emit({ type: "root-result", code: 23, signal: null });
+    const result = awaitedAdapter.wait();
+    const settled = vi.fn();
+    void result.then(settled, settled);
+    vi.spyOn(performance, "now").mockReturnValue(3192.0055);
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+    emit({ type: "closing", reason: "lineage-closed" });
+    await nextTurn();
+    stub.control.destroy();
+    stub.lineage.end();
+    stub.disconnectMock();
+    stub.emitExit(0);
+    await nextTurn();
+    await expect(awaitedAdapter.waitForExtinction()).resolves.toBeUndefined();
+    await vi.advanceTimersByTimeAsync(5_000);
+    if (consumed) {
+      expect(settled).not.toHaveBeenCalled();
+      release.resolve();
+    }
+    await expect(result).rejects.toMatchObject({
+      name: "ProcessOutputIncompleteError",
+      outputComplete: false,
+      result: { code: 23, signal: null },
+      cause: { message: expect.stringContaining("hard deadline") },
+    });
+    await expect(result).rejects.toBeInstanceOf(ProcessOutputIncompleteError);
+    if (consumed) {
+      await expect(consumed).rejects.toThrow("closed before EOF");
     }
   },
 );

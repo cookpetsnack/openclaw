@@ -4,7 +4,7 @@ import type { Duplex, Readable } from "node:stream";
 import { toErrorObject } from "../../infra/errors.js";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { sleep } from "../../utils/sleep.js";
-import { joinProcessCompletionAndOutput } from "../decoded-output.js";
+import { joinProcessCompletionAndOutput, ProcessOutputIncompleteError } from "../decoded-output.js";
 import { pipeProcessOutput } from "../pipe-output.js";
 import {
   createServiceChildControlSender,
@@ -232,11 +232,11 @@ export async function createServiceChildRelayAdapter(
         ),
       },
     );
-    // Extinction may already be confirmed while an output pipe remains open.
-    // Reject pending results before destroy can turn that missing tail into success.
-    resultError ??= error;
+    // Preserve an observed terminal result as diagnostic data, but never present
+    // output abandoned at the hard deadline as a complete successful wait.
+    resultError ??= rootResult ? new ProcessOutputIncompleteError(rootResult, error) : error;
     startup.reject(error);
-    resultCompletion.reject(error);
+    resultCompletion.reject(resultError);
     cleanup.completion.reject(error);
     try {
       loseIdentity(error.message);

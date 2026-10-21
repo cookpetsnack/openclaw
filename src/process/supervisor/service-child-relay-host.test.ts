@@ -4,6 +4,7 @@ import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import { afterEach, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../../shared/deferred.js";
 import { mockProcessPlatform } from "../../test-utils/vitest-spies.js";
+import { ProcessOutputIncompleteError } from "../decoded-output.js";
 import { closeOwnedStdioProcess } from "../owned-stdio.js";
 import * as childAdapter from "./adapters/child.js";
 import { GRACEFUL_CANCEL_TIMEOUT_MS } from "./cancellation-policy.js";
@@ -753,14 +754,30 @@ it.each([
     await vi.advanceTimersByTimeAsync(1);
     const results = await outcomes;
     const pendingIndex = leg === "output EOF" ? 0 : 1;
-    expect(results[pendingIndex]).toMatchObject({
-      status: "rejected",
-      reason: expect.objectContaining({
-        message:
-          "service child cleanup did not complete before its hard deadline; pending: " +
-          JSON.stringify({ closingReceipt: false, ...pending }),
-      }),
-    });
+    const deadlineMessage =
+      "service child cleanup did not complete before its hard deadline; pending: " +
+      JSON.stringify({ closingReceipt: false, ...pending });
+    if (leg === "output EOF") {
+      expect(results[pendingIndex]).toMatchObject({
+        status: "rejected",
+        reason: {
+          name: "ProcessOutputIncompleteError",
+          message: "process result observed but output did not complete",
+          outputComplete: false,
+          result: { code: 23, signal: null },
+          cause: { message: deadlineMessage },
+        },
+      });
+      expect(
+        results[pendingIndex].status === "rejected" &&
+          results[pendingIndex].reason instanceof ProcessOutputIncompleteError,
+      ).toBe(true);
+    } else {
+      expect(results[pendingIndex]).toMatchObject({
+        status: "rejected",
+        reason: expect.objectContaining({ message: deadlineMessage }),
+      });
+    }
     expect(results[1 - pendingIndex]?.status).toBe("fulfilled");
     expect(stdout?.destroyed).toBe(true);
     expect(stderr?.destroyed).toBe(true);
@@ -830,7 +847,12 @@ it("cannot revive lost authority with a late closing receipt while output remain
   const results = await outcomes;
   expect(results.map((result) => result.status)).toEqual(["rejected", "rejected"]);
   expect(results[0]).toMatchObject({
-    reason: expect.objectContaining({ message: expect.stringContaining("hard deadline") }),
+    reason: {
+      name: "ProcessOutputIncompleteError",
+      outputComplete: false,
+      result: { code: 23, signal: null },
+      cause: { message: expect.stringContaining("hard deadline") },
+    },
   });
   endOutput();
   expect(await Promise.allSettled([adapter.wait(), adapter.waitForExtinction()])).toEqual(results);
