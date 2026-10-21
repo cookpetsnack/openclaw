@@ -5,6 +5,7 @@ import { createComponent } from "solid-js";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { createDeferred as deferred } from "../../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
+import type { SolidRouteProps } from "../../app-route-types.tsx";
 import type { ApplicationContext } from "../../app/context.ts";
 import { mountRouterOutlet } from "../../app/router-outlet.test-support.tsx";
 import { changedServerUiPrefs } from "../../app/server-prefs-intent.ts";
@@ -626,21 +627,31 @@ it("leaves the settings route before a camera switch settles and still records i
       getUserMedia: vi.fn(),
     }),
   });
-  const appearance = pages.find((page) => page.id === "appearance")!;
+  const appearance = pages.find((page) => page.id === "appearance");
+  if (!appearance || appearance.id !== "appearance") {
+    throw new Error("Missing Appearance route");
+  }
   const production = await appearance.component();
   const module = {
     ...production,
-    renderSolid: (props: Parameters<typeof production.renderSolid>[0]) =>
+    renderSolid: (props: SolidRouteProps<ConfigPageRouteData>) =>
       createComponent(provider.wrapper, {
         get children() {
           return createComponent(production.renderSolid, props);
         },
       }),
   };
+  const usageModule = {
+    renderSolid: () => {
+      const destination = document.createElement("p");
+      destination.textContent = "Usage destination";
+      return destination;
+    },
+  };
   const router = createRouter<
     ConfigPageId | "usage",
     ApplicationContext,
-    typeof module,
+    typeof module | typeof usageModule,
     ConfigPageRouteData
   >({
     routes: [
@@ -648,13 +659,7 @@ it("leaves the settings route before a camera switch settles and still records i
       definePage({
         id: "usage",
         path: "/usage",
-        component: () => ({
-          renderSolid: () => {
-            const destination = document.createElement("p");
-            destination.textContent = "Usage destination";
-            return destination;
-          },
-        }),
+        component: () => usageModule,
       }),
     ],
   });
