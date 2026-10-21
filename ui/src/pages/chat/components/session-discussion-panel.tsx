@@ -312,7 +312,14 @@ export const SessionDiscussionPanel = defineSolidBridge<DiscussionProps>(
         retireDiscussion.get(host)?.();
       }
     },
-    disconnected: (host) => retireDiscussion.get(host)?.(),
+    disconnected: (host) => {
+      // Match the bridge's retained root when the host moves within one turn.
+      queueMicrotask(() => {
+        if (!host.isConnected) {
+          retireDiscussion.get(host)?.();
+        }
+      });
+    },
     properties: {
       sessionKey: { default: "" },
       loadInfo: { default: null, attribute: false },
