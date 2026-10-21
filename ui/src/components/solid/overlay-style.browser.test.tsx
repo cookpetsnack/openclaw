@@ -2,6 +2,7 @@ import { cleanup, render } from "@solidjs/testing-library";
 import { flush } from "solid-js";
 import { afterEach, describe, expect, it } from "vitest";
 import { page, userEvent } from "vitest/browser";
+import { finishElementAnimations } from "../../test-helpers/animations.ts";
 import { emulateOverlayMedia } from "../../test-helpers/overlay-browser-media.ts";
 import {
   item,
@@ -195,8 +196,9 @@ describe("native overlay presentation", () => {
       });
       Object.assign(trigger().style, { position: "fixed", left: "200px", top: "50px" });
       await openMenu();
-      // WebKit can report the final opening-transition frame after the phase settles.
-      await expect.poll(() => expectWithinViewport(surface()).height).toBe(500);
+      // Measure the consumer budget, not WebKit's in-flight entry scale.
+      finishElementAnimations(surface());
+      expect(expectWithinViewport(surface()).height).toBe(500);
       await userEvent.keyboard("{End}");
       expect(document.activeElement).toBe(item("Action 24"));
       const last = item("Action 24").getBoundingClientRect();
