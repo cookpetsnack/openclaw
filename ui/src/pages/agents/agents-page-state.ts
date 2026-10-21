@@ -14,13 +14,7 @@ import {
 } from "../../lib/agents/index.ts";
 import { DEFAULT_AGENT_PANEL, type AgentsPanel } from "../../lib/agents/panels.ts";
 import { currentConfigObject } from "../../lib/config/config-state-model.ts";
-import {
-  createInitialCronState,
-  loadCronJobsPage,
-  loadCronScopeStats,
-  loadCronStatus,
-  runCronJob,
-} from "../../lib/cron/index.ts";
+import { createInitialCronState } from "../../lib/cron/index.ts";
 import type { CronState } from "../../lib/cron/types.ts";
 import { isGatewayAvailable } from "../../lib/gateway-availability.ts";
 import {
@@ -34,6 +28,7 @@ import { observeState } from "../../lib/reactive/observe-state.ts";
 import { projectOwner } from "../../lib/reactive/projection.ts";
 import { parseAgentSessionKey } from "../../lib/sessions/session-key.ts";
 import { createAgentConfigActions } from "./agent-config-actions.ts";
+import { createAgentCronPresenter } from "./agent-cron-presenter.ts";
 import type { GeneratedAvatar } from "./avatar-picker.tsx";
 import {
   loadAgentFileContent,
@@ -155,6 +150,12 @@ export function createAgentsPageState(
     "channelsSnapshot" | "channelsLoading" | "channelsError" | "channelsLastSuccess"
   > = channels.read;
   const publish = observation.invalidate;
+  const cron = createAgentCronPresenter({
+    currentState: () => state.cron,
+    readState: () => readData().cron,
+    canCall: (method, scope) => active && canCall(method, scope),
+    publish,
+  });
   const selectionDrafts = createAgentSelectionDrafts(state, resetSelectionState);
   let identitySaves = selectionDrafts.bindContext(context);
   let identityAutosaveTimer: ReturnType<typeof setTimeout> | null = null;
@@ -243,6 +244,7 @@ export function createAgentsPageState(
     if (state.cron.client !== state.client || state.cron.connected !== state.connected) {
       // In-flight cron loaders mutate their captured state; same-client
       // snapshots must retain it or loading never clears in the visible state.
+      cron.retire();
       state.cron = { ...state.cron, client: state.client, connected: state.connected };
     }
   }
@@ -312,6 +314,7 @@ export function createAgentsPageState(
     state.agentSkillsLoading = false;
     toolsCatalog.invalidate();
     effectiveTools.reset();
+    cron.retire();
     state.cron = {
       ...state.cron,
       cronLoading: false,
@@ -447,6 +450,7 @@ export function createAgentsPageState(
     }
     if (state.agentsPanel === "cron") {
       if (state.cron.cronAgentId !== agentId) {
+        cron.retire();
         state.cron = createInitialCronState({
           client: state.client,
           connected: state.connected,
@@ -454,7 +458,7 @@ export function createAgentsPageState(
         state.cron.cronAgentId = agentId;
       }
       if (!state.cron.cronLoading && !state.cron.cronStatus) {
-        void refreshCron();
+        cron.onRefresh();
       }
     }
   }
@@ -556,38 +560,6 @@ export function createAgentsPageState(
     }
   }
 
-  async function refreshCron() {
-    const cronState = state.cron;
-    if (
-      !cronState.connected ||
-      !cronState.client ||
-      cronState.cronLoading ||
-      !canCall("cron.list", "operator.read")
-    ) {
-      return;
-    }
-    await Promise.all([
-      runCronTask(loadCronStatus),
-      runCronTask(loadCronScopeStats),
-      runCronTask((current) => loadCronJobsPage(current, { tableFilters: true })),
-    ]);
-  }
-
-  async function runCronTask<T>(task: (cronState: CronState) => Promise<T>): Promise<T> {
-    const cronState = state.cron;
-    try {
-      const result = task(cronState);
-      if (state.cron === cronState) {
-        publish();
-      }
-      return await result;
-    } finally {
-      if (state.cron === cronState) {
-        publish();
-      }
-    }
-  }
-
   function clearIdentityAutosave() {
     if (identityAutosaveTimer !== null) {
       clearTimeout(identityAutosaveTimer);
@@ -677,6 +649,7 @@ export function createAgentsPageState(
     resetIdentityDraft(state);
     toolsCatalog.reset();
     effectiveTools.reset();
+    cron.retire();
     state.cron = createInitialCronState({
       client: state.client,
       connected: state.connected,
@@ -782,16 +755,6 @@ export function createAgentsPageState(
     });
   }
 
-  function runCronJobNow(jobId: string) {
-    if (
-      !canCall("cron.run", "operator.admin") ||
-      !state.cron.cronJobs.some((entry) => entry.id === jobId)
-    ) {
-      return;
-    }
-    void runCronTask((cronState) => runCronJob(cronState, jobId, "force"));
-  }
-
   function viewProps() {
     const configState = context.runtimeConfig.state;
     const agentsState = context.agents.state;
@@ -825,12 +788,10 @@ export function createAgentsPageState(
         onRefresh: () => void context.channels.refresh(false),
       },
       cron: {
-        onRefresh: () => void refreshCron(),
-        onLoadMore: () =>
-          void runCronTask((cronState) =>
-            loadCronJobsPage(cronState, { append: true, tableFilters: true }),
-          ),
-        onRunNow: (jobId: string) => runCronJobNow(jobId),
+        read: cron.read,
+        onRefresh: cron.onRefresh,
+        onLoadMore: cron.onLoadMore,
+        onRunNow: cron.onRunNow,
       },
       agentFiles: {
         agentFilesError: state.agentFilesError ?? agentFilesListError,
@@ -1032,6 +993,7 @@ export function createAgentsPageState(
       selectionDrafts.retainCurrentIdentity();
       clearIdentityAutosave();
       active = false;
+      cron.retire();
       observation.dispose();
       for (const stop of stops) {
         stop();
