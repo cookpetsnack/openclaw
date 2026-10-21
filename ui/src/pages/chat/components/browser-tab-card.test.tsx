@@ -15,6 +15,7 @@ import { ApplicationProvider } from "../../../lib/reactive/context.ts";
 import { gatewayHelloForMethods } from "../../../test-helpers/gateway-methods.ts";
 import { cleanupSolid, mountSolid } from "../../../test-helpers/mount-solid.ts";
 import { flush, waitForSolid } from "../../../test-helpers/solid-settle.ts";
+import { waitForFast } from "../../../test-helpers/wait-for.ts";
 import { createInitializationContext } from "../chat-pane.test-support.ts";
 import { groupMessages } from "../chat-thread-grouping.ts";
 import { BrowserTabCardHost } from "./browser-tab-card.tsx";
@@ -421,14 +422,14 @@ describe("browser tab card", () => {
     }>();
     gateway.request.mockReturnValue(metadata.promise);
     const element = await card(gateway.context, false);
-    await vi.waitFor(() => expect(gateway.request).toHaveBeenCalledOnce());
+    await waitForFast(() => expect(gateway.request).toHaveBeenCalledOnce());
     expect(element.querySelector("img")).toBeNull();
     metadata.resolve({
       title: "Example page",
       faviconDataUrl: "data:image/png;base64,aWNvbg==",
       imageDataUrl: "data:image/png;base64,c29jaWFs",
     });
-    await vi.waitFor(() =>
+    await waitForFast(() =>
       expect(element.querySelector(".icon img")?.getAttribute("src")).toBe(
         "data:image/png;base64,aWNvbg==",
       ),
@@ -455,10 +456,10 @@ describe("browser tab card", () => {
     const pending = createDeferred<{ title: string; imageDataUrl: string }>();
     gateway.request.mockReturnValueOnce(pending.promise).mockResolvedValue({ title: "New page" });
     const element = await card(gateway.context, false);
-    await vi.waitFor(() => expect(gateway.request).toHaveBeenCalledOnce());
+    await waitForFast(() => expect(gateway.request).toHaveBeenCalledOnce());
     updatePreview(element, { url: "https://example.com/new" });
     flush();
-    await vi.waitFor(() => expect(element.querySelector(".title")?.textContent).toBe("New page"));
+    await waitForFast(() => expect(element.querySelector(".title")?.textContent).toBe("New page"));
     pending.resolve({ title: "Old page", imageDataUrl: "data:image/png;base64,b2xk" });
     await new Promise<void>((resolve) => {
       setTimeout(resolve, 0);
@@ -526,13 +527,13 @@ describe("browser tab card", () => {
         : screenshot.promise,
     );
     const element = await card(gateway.context);
-    await vi.waitFor(() =>
+    await waitForFast(() =>
       expect(element.querySelector(".shot.social img")?.getAttribute("src")).toBe(
         "data:image/png;base64,c29jaWFs",
       ),
     );
     screenshot.resolve({ path: "/tmp/tab.png" });
-    await vi.waitFor(() =>
+    await waitForFast(() =>
       expect(element.querySelector(".shot img")?.getAttribute("src")).toBe(
         "data:image/png;base64,dGh1bWJuYWls",
       ),
@@ -546,7 +547,7 @@ describe("browser tab card", () => {
     first.request.mockResolvedValue({ title: "First gateway" });
     await card(first.context, false);
     const duplicate = await card(first.context, false);
-    await vi.waitFor(() =>
+    await waitForFast(() =>
       expect(duplicate.querySelector(".title")?.textContent).toBe("First gateway"),
     );
     expect(first.request).toHaveBeenCalledOnce();
@@ -554,7 +555,7 @@ describe("browser tab card", () => {
     second.request.mockResolvedValue({ title: "Second gateway" });
     updateCard(duplicate, { context: second.context });
     flush();
-    await vi.waitFor(() =>
+    await waitForFast(() =>
       expect(duplicate.querySelector(".title")?.textContent).toBe("Second gateway"),
     );
     expect(second.request).toHaveBeenCalledOnce();
@@ -572,7 +573,7 @@ describe("browser tab card", () => {
       imageDataUrl: "data:image/png;base64,c29jaWFs",
     });
     const element = await card(gateway.context, false);
-    await vi.waitFor(() => expect(gateway.request).toHaveBeenCalledOnce());
+    await waitForFast(() => expect(gateway.request).toHaveBeenCalledOnce());
     gateway.snapshot.phase = "offline";
     gateway.notify();
     flush();
@@ -583,7 +584,7 @@ describe("browser tab card", () => {
     gateway.snapshot.phase = "connected";
     gateway.notify();
     flush();
-    await vi.waitFor(() =>
+    await waitForFast(() =>
       expect(element.querySelector(".title")?.textContent).toBe("Recovered preview"),
     );
     expect(element.querySelector(".shot img")).not.toBeNull();
@@ -618,7 +619,7 @@ describe("browser tab card", () => {
   ] as const)("keeps $target/$profile on the thumbnail and open action", async (tab) => {
     const gateway = gatewayContext();
     const element = await card(gateway.context, true, tab);
-    await vi.waitFor(() => expect(element.querySelector("img")).not.toBeNull());
+    await waitForFast(() => expect(element.querySelector("img")).not.toBeNull());
     expect(gateway.request).toHaveBeenCalledWith("browser.request", {
       method: "POST",
       path: "/screenshot",
@@ -641,7 +642,7 @@ describe("browser tab card", () => {
     const older = await card(gateway.context, false);
     const first = await card(gateway.context);
     const duplicate = await card(gateway.context);
-    await vi.waitFor(() => expect(duplicate.querySelector("img")).not.toBeNull());
+    await waitForFast(() => expect(duplicate.querySelector("img")).not.toBeNull());
     expect(first.querySelector("img")).not.toBeNull();
     expect(older.querySelector("img")).toBeNull();
     expect(gateway.request).toHaveBeenCalledOnce();
@@ -652,7 +653,7 @@ describe("browser tab card", () => {
     await Promise.resolve();
     expect(gateway.listeners.size).toBe(0);
     const remounted = await card(gateway.context);
-    await vi.waitFor(() => expect(remounted.querySelector("img")).not.toBeNull());
+    await waitForFast(() => expect(remounted.querySelector("img")).not.toBeNull());
     expect(gateway.request).toHaveBeenCalledOnce();
   });
 
@@ -670,7 +671,7 @@ describe("browser tab card", () => {
       expect(initial).toHaveLength(1);
       expect(initial[0]?.querySelector(".title")?.textContent).toBe("new");
       expect(initial.every((element) => !element.closest(".chat-activity-group__body"))).toBe(true);
-      await vi.waitFor(() => expect(initial[0]?.querySelector("img")).not.toBeNull());
+      await waitForFast(() => expect(initial[0]?.querySelector("img")).not.toBeNull());
       expect(await draw(true)).toHaveLength(1);
       expect(gateway.request).toHaveBeenCalledOnce();
       messages.push(message("newest", separateTabs ? "first" : "tab-1"));
@@ -690,8 +691,8 @@ describe("browser tab card", () => {
           },
         },
       });
-      await vi.waitFor(() => expect(gateway.request).toHaveBeenCalledTimes(2));
-      await vi.waitFor(() => expect(next[0]?.querySelector("img")).not.toBeNull());
+      await waitForFast(() => expect(gateway.request).toHaveBeenCalledTimes(2));
+      await waitForFast(() => expect(next[0]?.querySelector("img")).not.toBeNull());
     },
   );
 
@@ -806,12 +807,12 @@ describe("browser tab card", () => {
     const pending = createDeferred<{ path: string }>();
     gateway.request.mockReturnValueOnce(pending.promise);
     const element = await card(gateway.context);
-    await vi.waitFor(() => expect(gateway.request).toHaveBeenCalledOnce());
+    await waitForFast(() => expect(gateway.request).toHaveBeenCalledOnce());
     gateway.snapshot.phase = "offline";
     gateway.notify();
     flush();
     pending.resolve({ path: "/tmp/tab.png" });
-    await vi.waitFor(() => expect(gateway.fetchMock).toHaveBeenCalledOnce());
+    await waitForFast(() => expect(gateway.fetchMock).toHaveBeenCalledOnce());
     await new Promise<void>((resolve) => {
       setTimeout(resolve, 0);
     });
