@@ -1,6 +1,5 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
 import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
-import type { JSX } from "@solidjs/web";
 import {
   Errored,
   For,
@@ -71,30 +70,13 @@ export function AgentSkills(params: AgentSkillsProps) {
           void operation.catch(() => undefined);
           setCommand(() => operation);
         };
-        const commandStatus = (
-          <Show when={command()} keyed>
-            {(completion) => {
-              const settled = createMemo(async () => {
-                await completion;
-                return null;
-              });
-              return (
-                <Errored
-                  fallback={(error) => <div class="callout danger">{formatUiError(error())}</div>}
-                >
-                  <Loading fallback={null}>{settled()}</Loading>
-                </Errored>
-              );
-            }}
-          </Show>
-        );
         return (
           <AgentSkillsContent
             {...params}
             explicit={explicit()}
             allowlist={allowlist()}
             resetting={resetting()}
-            commandStatus={commandStatus}
+            command={command()}
             onClear={onClear}
           />
         );
@@ -109,7 +91,7 @@ function AgentSkillsContent(
     explicit: boolean;
     allowlist: string[] | undefined;
     resetting: boolean;
-    commandStatus: JSX.Element;
+    command: Promise<void> | null;
   },
 ) {
   const configReady = () =>
@@ -165,7 +147,21 @@ function AgentSkillsContent(
       {params.readData().agentSkillsError ? (
         <div class="callout danger">{params.readData().agentSkillsError}</div>
       ) : (
-        params.commandStatus
+        <Show when={params.command} keyed>
+          {(completion) => {
+            const settled = createMemo(async () => {
+              await completion;
+              return null;
+            });
+            return (
+              <Errored
+                fallback={(error) => <div class="callout danger">{formatUiError(error())}</div>}
+              >
+                <Loading fallback={null}>{settled()}</Loading>
+              </Errored>
+            );
+          }}
+        </Show>
       )}
       <SettingsSection
         title={t("agents.skillsPanel.title")}
