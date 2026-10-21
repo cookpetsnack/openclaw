@@ -94,14 +94,14 @@ it.each([
     );
     vi.spyOn(runtimePaths, "resolveNodeRuntimeInfo").mockImplementation(async (node) => ({
       status: "supported",
-      version: compatible || node === "/current/node" ? "26.1.0" : "24.16.0",
+      version: compatible || node === "/current/node" ? "26.12.1" : "24.22.1",
       sqliteVersion: "3.53.0",
       nodeSharedSqlite: false,
       sqliteProbe: { available: true, version: "3.53.0", text: true, blob: true, json: true },
     }));
     vi.mocked(packageMetadata.fetchNpmPackageTargetStatus).mockResolvedValue({
       ...targetMetadata,
-      nodeEngine: ">=26.1.0",
+      nodeEngine: ">=26.12.1",
     });
     if (current) {
       fs.writeFileSync(
@@ -148,7 +148,7 @@ it.each([
     const replacement = !compatible && restart && owned && (!current || (running && refresh));
     if (!compatible && !replacement) {
       const recoverySteps = expectedRuntimeRecoverySteps(
-        "26.1.0",
+        "26.12.1",
         fixture.root,
         "2026.9.2",
         undefined,
@@ -174,7 +174,7 @@ it.each([
                 code: "node-runtime-preflight",
                 affectedKey: "engines.node",
                 message:
-                  "Required: openclaw@2026.9.2 Node >=26.1.0; detected: Node 24.16.0 at [redacted-path]",
+                  "Required: openclaw@2026.9.2 Node >=26.12.1; detected: Node 24.22.1 at [redacted-path]",
               }),
             },
           ],
@@ -212,7 +212,7 @@ it.each([
             ),
             failureFacts: matchingEntry({
               code: "node-runtime-preflight",
-              message: expect.stringContaining("Required: openclaw@2026.9.2 Node >=26.1.0"),
+              message: expect.stringContaining("Required: openclaw@2026.9.2 Node >=26.12.1"),
             }),
           }),
         });

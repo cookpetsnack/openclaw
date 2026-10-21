@@ -66,7 +66,7 @@ it.each([
     vi.mocked(packageMetadata.fetchNpmPackageTargetStatus).mockImplementation(async () => ({
       ...targetMetadata,
       version,
-      nodeEngine: ">=24.16.0",
+      nodeEngine: ">=24.22.1",
     }));
     vi.mocked(updateCheck.resolveNpmChannelTag).mockResolvedValue({ tag: channel, version });
     vi.mocked(shared.resolveTargetVersion).mockResolvedValue({ version });
@@ -107,7 +107,7 @@ it.each([
     const quote = process.platform === "win32" ? quotePowerShellArg : quoteCliArg;
     const launcher = `node ${quote(path.join(fixture.root, "openclaw.mjs"))} `;
     expect(command.slice(0, launcher.length)).toBe(launcher);
-    runtime.mockResolvedValue(runtimeFixture("26.1.0", "3.53.0"));
+    runtime.mockResolvedValue(runtimeFixture("26.12.1", "3.53.0"));
     const program = new Command();
     registerUpdateCli(program);
 
