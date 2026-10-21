@@ -223,8 +223,10 @@ async function fingerprintPublicKey(publicKey: Uint8Array): Promise<string> {
 }
 
 async function generateIdentity(): Promise<DeviceIdentity> {
-  const { getPublicKeyAsync, utils } = await import("./device-signing.runtime.ts");
-  const privateKey = utils.randomSecretKey();
+  // Ed25519 uses a 32-byte random seed. An unavailable RNG must fail before
+  // loading the signer so the Gateway's device-less fallback stays immediate.
+  const privateKey = globalThis.crypto.getRandomValues(new Uint8Array(32));
+  const { getPublicKeyAsync } = await import("./device-signing.runtime.ts");
   const publicKey = await getPublicKeyAsync(privateKey);
   const deviceId = await fingerprintPublicKey(publicKey);
   return {

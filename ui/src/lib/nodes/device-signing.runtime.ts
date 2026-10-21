@@ -1,6 +1,6 @@
 import { hashes } from "@noble/ed25519";
 
-export { getPublicKeyAsync, signAsync, utils } from "@noble/ed25519";
+export { getPublicKeyAsync, signAsync } from "@noble/ed25519";
 
 // Keep the signer and its insecure-context fallback behind the first signing
 // operation. Reading stored credentials does not need either implementation.
