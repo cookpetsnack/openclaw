@@ -85,14 +85,17 @@ function createCiAutomation(props: Props, host: SolidBridgeElement<Props>) {
       autoMerge: state.jobs.autoMerge?.enabled === true,
       autoArchive: state.jobs.autoArchive?.enabled === true,
     }));
+    const [autoFixPending, setAutoFixPending] = createOptimistic(false);
+    const [autoMergePending, setAutoMergePending] = createOptimistic(false);
+    const [autoArchivePending, setAutoArchivePending] = createOptimistic(false);
     return {
       version,
       options,
       setOptions,
       pending: {
-        autoFix: createOptimistic(false),
-        autoMerge: createOptimistic(false),
-        autoArchive: createOptimistic(false),
+        autoFix: [autoFixPending, setAutoFixPending] as const,
+        autoMerge: [autoMergePending, setAutoMergePending] as const,
+        autoArchive: [autoArchivePending, setAutoArchivePending] as const,
       },
     };
   });
@@ -164,7 +167,7 @@ function createCiAutomation(props: Props, host: SolidBridgeElement<Props>) {
   function queueRefresh() {
     queueMicrotask(() => {
       if (refreshPending && disclosure.visible() && !readController && !writes.size) {
-        void load();
+        load();
       }
     });
   }
@@ -228,7 +231,7 @@ function createCiAutomation(props: Props, host: SolidBridgeElement<Props>) {
     }
     readController.abort();
     readController = undefined;
-    setReceipt(Promise.resolve(accepted));
+    void setReceipt(Promise.resolve(accepted));
     refreshPending = true;
   }
 
@@ -245,7 +248,7 @@ function createCiAutomation(props: Props, host: SolidBridgeElement<Props>) {
       draft.schedulerEnabled = undefined;
       draft.error = null;
     });
-    setReceipt(Promise.resolve(undefined));
+    void setReceipt(Promise.resolve(undefined));
     refreshPending = true;
   }
 
@@ -297,7 +300,7 @@ function createCiAutomation(props: Props, host: SolidBridgeElement<Props>) {
     queueRefresh();
     const current = () => owner.current() && disclosure.visible() && readController === controller;
     const result = request();
-    setReceipt(result);
+    void setReceipt(result);
     // The boundary owns the visible error; cancellation may retire its reader first.
     void result.catch(() => {});
 
@@ -320,7 +323,9 @@ function createCiAutomation(props: Props, host: SolidBridgeElement<Props>) {
       } catch (error) {
         if (current()) {
           inventoryVersion = -1;
-          throw new Error(formatUiError(error, t("chat.pullRequests.automationLoadFailed")));
+          throw new Error(formatUiError(error, t("chat.pullRequests.automationLoadFailed")), {
+            cause: error,
+          });
         }
         return undefined;
       } finally {

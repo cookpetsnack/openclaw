@@ -110,7 +110,7 @@ function createCiDetails(host: ChatCiDetailsElement) {
     Promise.resolve<ControlUiSessionPullRequestCheckDetails | undefined>(undefined),
   );
   const read = createMemo(() => receipt());
-  const [scope, setScope] = createSignal(0);
+  const [scopeRevision, setScope] = createSignal(0);
   let accepted: ControlUiSessionPullRequestCheckDetails | undefined;
   let target = "";
   let sessionKey = "";
@@ -140,10 +140,10 @@ function createCiDetails(host: ChatCiDetailsElement) {
     stopGateway = gateway?.subscribe((snapshot) => {
       if (connection.transition(snapshot)) {
         reset();
-        queueMicrotask(() => void load());
+        queueMicrotask(load);
       }
     });
-    queueMicrotask(() => void load());
+    queueMicrotask(load);
   }
 
   function syncTarget() {
@@ -184,13 +184,13 @@ function createCiDetails(host: ChatCiDetailsElement) {
     requestController = undefined;
     clearTimeout(refreshTimer);
     refreshTimer = undefined;
-    setReceipt(Promise.resolve(accepted));
+    void setReceipt(Promise.resolve(accepted));
   }
 
   function reset() {
     cancelRequest();
     accepted = undefined;
-    setReceipt(Promise.resolve(undefined));
+    void setReceipt(Promise.resolve(undefined));
     setScope((value) => value + 1);
     setState((draft) => {
       draft.retryAt = 0;
@@ -201,7 +201,7 @@ function createCiDetails(host: ChatCiDetailsElement) {
 
   function handleVisibility() {
     if (disclosure.visible()) {
-      void load();
+      load();
     } else {
       cancelRequest();
     }
@@ -219,7 +219,7 @@ function createCiDetails(host: ChatCiDetailsElement) {
     const scope = connection.capture();
     if (!scope || !host.gateway || !pr?.headSha || !host.sessionKey) {
       const result = Promise.reject(new Error(t("chat.pullRequests.checksUnavailable")));
-      setReceipt(result);
+      void setReceipt(result);
       void result.catch(() => {});
       return;
     }
@@ -236,10 +236,10 @@ function createCiDetails(host: ChatCiDetailsElement) {
     requestController = controller;
     const current = () =>
       disclosure.visible() && requestController === controller && connection.isCurrent(scope);
-    const result = request();
-    setReceipt(result);
+    const pending = request();
+    void setReceipt(pending);
     // The read boundary observes failures even if this disclosure closes first.
-    void result.catch(() => {});
+    void pending.catch(() => {});
 
     async function request(): Promise<ControlUiSessionPullRequestCheckDetails | undefined> {
       try {
@@ -276,14 +276,16 @@ function createCiDetails(host: ChatCiDetailsElement) {
           scheduleRetryAvailability(retryAt);
         } else if (result.status === "ready") {
           // Completed jobs can be rerun on the same head without changing the summary counts.
-          refreshTimer = setTimeout(() => void load(), REFRESH_MS);
+          refreshTimer = setTimeout(load, REFRESH_MS);
         }
         return result;
       } catch (error) {
         if (current()) {
           // Only explicit stale responses authorize retaining previous details.
           accepted = undefined;
-          throw new Error(formatUiError(error, t("chat.pullRequests.checksUnavailable")));
+          throw new Error(formatUiError(error, t("chat.pullRequests.checksUnavailable")), {
+            cause: error,
+          });
         }
         return accepted;
       } finally {
@@ -308,7 +310,7 @@ function createCiDetails(host: ChatCiDetailsElement) {
   return {
     state,
     read,
-    scope,
+    scope: scopeRevision,
     load,
     setExpanded: (id: number, open: boolean) => {
       setState((draft) => {
