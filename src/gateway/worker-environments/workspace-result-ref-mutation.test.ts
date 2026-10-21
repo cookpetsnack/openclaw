@@ -75,6 +75,7 @@ it("shares ref serialization and deferred retention between snapshots and result
   for (const repositoryRoot of [root, other]) {
     await requireGit(repositoryRoot, ["update-ref", stagedResultRef, "HEAD"]);
     await requireGit(repositoryRoot, ["update-ref", candidateRef, "HEAD"]);
+    await requireGit(repositoryRoot, ["pack-refs", "--all"]);
   }
   const retainedRef = cleanupWorkerWorkspaceResultRef(workerWorkspaceResultRef("retained"));
   await requireGit(root, ["update-ref", retainedRef, "HEAD"]);
@@ -158,6 +159,9 @@ it("shares ref serialization and deferred retention between snapshots and result
     stagedResultRef,
   });
   expect(await refStates(stagedResultRef, cleanupRef)).toEqual([true, false]);
+  await requireGit(root, ["update-ref", candidateRef, "HEAD"]);
+  await deleteStagedWorkerWorkspaceResult({ root: linked, stagedResultRef: candidateRef });
+  expect(await refStates(stagedResultRef, candidateRef)).toEqual([true, false]);
   await moveStagedWorkerWorkspaceResultToCleanup({ root: linked, stagedResultRef });
   await deleteWorkerWorkspaceResultCleanupRefs({ root: linked });
   expect(await requireGit(root, ["for-each-ref", "--format=%(refname)", "refs/openclaw/"])).toBe(

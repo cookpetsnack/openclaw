@@ -1,10 +1,10 @@
-import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { afterEach, expect, it } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../../test/helpers/temp-dir.js";
 import { runCommandWithTimeout } from "../../process/exec.js";
 import { parseRemoteWorkspaceManifestEnvelope } from "./workspace-hash-memo.js";
+import { sha256, workspaceFile } from "./workspace-manifest-fixtures.test-support.js";
 import { REMOTE_WORKSPACE_MANIFEST_JS } from "./workspace-sync-scripts.js";
 
 const tempDirs = useAutoCleanupTempDirTracker(afterEach);
@@ -51,13 +51,7 @@ it("hashes concurrently within four readers and preserves manifest and memo orde
       const content = Buffer.alloc(1024, index);
       const file = path.join(workspace, name);
       await fs.writeFile(file, content, { mode: 0o600 });
-      return {
-        path: name,
-        type: "file",
-        mode: 0o644,
-        size: content.length,
-        sha256: createHash("sha256").update(content).digest("hex"),
-      };
+      return workspaceFile(name, content);
     }),
   );
   const prelude = String.raw`
@@ -94,7 +88,7 @@ it("hashes concurrently within four readers and preserves manifest and memo orde
       "utf8",
     );
     expect(JSON.parse(raw)).toEqual({ version: 1, baseCommit: null, entries });
-    expect(response.manifestRef).toBe(`sha256:${createHash("sha256").update(raw).digest("hex")}`);
+    expect(response.manifestRef).toBe(`sha256:${sha256(raw)}`);
     if (cached) {
       expect(response.manifestRef).toBe(manifestRef);
       expect(response.memo).toEqual(memo);
