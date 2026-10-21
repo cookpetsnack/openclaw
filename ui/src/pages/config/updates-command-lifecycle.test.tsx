@@ -2,8 +2,12 @@
 
 import { createRouter } from "@openclaw/uirouter";
 import { expect, it, vi } from "vitest";
+import type { SolidRouteProps } from "../../app-route-types.tsx";
 import type { ApplicationContext } from "../../app/context.ts";
-import { createNativeDeviceSettingsCapability } from "../../app/native-device-settings.ts";
+import {
+  createNativeDeviceSettingsCapability,
+  type NativeDeviceSettingsCapability,
+} from "../../app/native-device-settings.ts";
 import { client, type RequestFn } from "../../app/overlays-access.test-support.ts";
 import { createApplicationOverlays } from "../../app/overlays.ts";
 import { mountRouterOutlet } from "../../app/router-outlet.test-support.tsx";
@@ -35,30 +39,35 @@ it.each([
     const harness = updateRunHarness(request);
     harness.update({ selfUser: { id: "synthetic-admin" } });
     const overlays = createApplicationOverlays(harness.gateway);
-    // SAFETY: completeConfigContext fills the unrelated capabilities for this route fixture.
-    const context = completeConfigContext({
-      gateway: harness.gateway,
-    } as unknown as ApplicationContext);
-    context.overlays = overlays;
     const nativeSnapshot = createNativeDeviceSettingsSnapshot();
     const nativePost = vi
       .fn<(message: unknown) => Promise<unknown>>()
       .mockResolvedValue(nativeSnapshot);
+    let nativeDeviceSettings: NativeDeviceSettingsCapability | null = null;
     if (command === "native") {
       vi.stubGlobal("webkit", {
         messageHandlers: { openclawDeviceSettings: { postMessage: nativePost } },
       });
       vi.stubGlobal("__OPENCLAW_NATIVE_DEVICE_SETTINGS__", nativeSnapshot);
-      context.nativeDeviceSettings = createNativeDeviceSettingsCapability();
+      nativeDeviceSettings = createNativeDeviceSettingsCapability();
       nativePost.mockReturnValueOnce(preview.promise);
     }
+    // SAFETY: completeConfigContext fills the unrelated capabilities for this route fixture.
+    const context: ApplicationContext = {
+      ...completeConfigContext({ gateway: harness.gateway } as unknown as ApplicationContext),
+      overlays,
+      nativeDeviceSettings,
+    };
     const provider = createSolidApplicationContextProvider(context);
-    const routes = pages.filter((page) => page.id === "updates" || page.id === "advanced");
+    type SettingsRoute = Extract<(typeof pages)[number], { id: ConfigPageId }>;
+    const routes = pages.filter(
+      (page): page is SettingsRoute => page.id === "updates" || page.id === "advanced",
+    );
     const production = await routes[0]!.component();
     const Page = production.renderSolid;
     const module = {
       ...production,
-      renderSolid: (props: Parameters<typeof Page>[0]) => (
+      renderSolid: (props: SolidRouteProps<ConfigPageRouteData>) => (
         <provider.wrapper>
           <Page {...props} />
         </provider.wrapper>
@@ -109,11 +118,15 @@ it.each([
       }
       if (replacement === "route") {
         await router.navigate("advanced", context);
-        await waitForSolid(() =>
+        const advanced = await waitForSolid(() => {
           expect(view.querySelector(".content-header--settings .page-title")?.textContent).toBe(
             "Advanced",
-          ),
-        );
+          );
+          const content = view.querySelector(".config-content");
+          expect(content?.textContent).toContain("Unsupported schema. Use Raw.");
+          expect(view.querySelector("#config-section-update")).toBeNull();
+          return content;
+        });
         if (command === "report") {
           expect(overlays.snapshot.updateFailureReportBusy).toBe(true);
           preview.resolve(null);
@@ -128,6 +141,8 @@ it.each([
             expect(context.nativeDeviceSettings?.snapshot?.updates?.automatic).toBe(false),
           );
         }
+        expect(view.querySelector(".config-content")).toBe(advanced);
+        expect(view.querySelector("#config-section-update")).toBeNull();
       } else {
         harness.update({
           client: client(vi.fn<RequestFn>(() => Promise.resolve({ lastRun: run }))),
