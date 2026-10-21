@@ -12,6 +12,7 @@ import {
   createGatewayHarness,
   flushSync,
 } from "../../../lib/session-pull-requests.test-support.ts";
+import { waitForSolid } from "../../../test-helpers/solid-settle.ts";
 import type { ChatCiAutomationElement } from "./chat-ci-automation-control.ts";
 import "./chat-ci-automation-control.ts";
 
@@ -119,6 +120,28 @@ describe("CI automation popup scope", () => {
     h = new Fixture();
     await h.paint("first");
   });
+  it("keeps controls disabled through an initial read failure and enables an empty retry", async () => {
+    const read = createDeferred<ReturnType<typeof inventory>>();
+    h.read = read.promise;
+    await h.open(false);
+    expect(h.checkbox().closest("fieldset")?.disabled).toBe(true);
+    read.reject(new Error("Inventory unavailable"));
+    await waitForSolid(() => {
+      expect(h.root.querySelector('[role="alert"]')?.textContent).toContain(
+        "Inventory unavailable",
+      );
+      expect(h.checkbox().closest("fieldset")?.disabled).toBe(true);
+    });
+    h.read = undefined;
+    h.root.querySelector<HTMLButtonElement>(".chat-ci__automation-retry")!.click();
+    await waitForSolid(() => {
+      expect(h.root.querySelector('[role="alert"]')).toBeNull();
+      expect(h.checkbox().closest("fieldset")?.disabled).toBe(false);
+    });
+    expect(h.calls("cron.list")).toHaveLength(2);
+    h.toggles(false, false);
+  });
+
   it("keeps concurrent intents across stale inventory and out-of-order acknowledgements", async () => {
     const staleRead = createDeferred<ReturnType<typeof inventory>>();
     const fixWrite = createDeferred<CronJob>();
@@ -128,10 +151,12 @@ describe("CI automation popup scope", () => {
     h.jobs = [fix];
     h.writes = { "cron.update": fixWrite.promise, "cron.add": mergeWrite.promise };
     await h.open();
+    const fixInput = h.checkbox();
     const before = h.root.textContent;
     h.request.mockImplementationOnce(() => staleRead.promise);
     h.harness.emit({}, "cron");
     await h.element.updateComplete;
+    expect(h.checkbox()).toBe(fixInput);
     h.checkbox().click();
     expect(h.checkbox().checked).toBe(false);
     await h.element.updateComplete;
@@ -147,6 +172,7 @@ describe("CI automation popup scope", () => {
     staleRead.resolve(inventory([job("first")]));
     await h.settle();
     h.toggles(false, true);
+    expect(h.checkbox()).toBe(fixInput);
     h.jobs.push(merge);
     mergeWrite.resolve({ job: merge });
     h.harness.emit({}, "cron");
@@ -247,6 +273,15 @@ describe("CI automation popup scope", () => {
     h.writes["cron.add"] = pending.promise;
     await h.open();
     h.checkbox().click();
+    await h.element.updateComplete;
+    h.element.presented = false;
+    await h.settle();
+    expect(h.checkbox().checked).toBe(true);
+    expect(h.checkbox().disabled).toBe(true);
+    h.element.presented = true;
+    await h.settle();
+    expect(h.checkbox().disabled).toBe(true);
+    expect(h.calls("cron.list")).toHaveLength(1);
     h.element.presented = false;
     h.jobs = [job("first")];
     pending.resolve({ job: h.jobs[0]! });
