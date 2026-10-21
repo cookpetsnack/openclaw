@@ -27,6 +27,7 @@ const selectedAvatar = "data:image/webp;base64,Ym90";
 registerEnglishCatalog(registerSettingsEnglish);
 // mock-isolation: exercise dialog selection/upload state without mounting the avatar generator.
 vi.mock("../pages/agents/avatar-image.ts", () => ({ fileToAvatarDataUrl: picker.convert }));
+// mock-isolation: replace the entire picker with a controlled boundary for dialog-only upload tests.
 vi.mock("../pages/agents/avatar-picker.tsx", () => ({
   AvatarPicker: (props: {
     onSelect: (avatar: string) => void;

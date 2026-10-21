@@ -1,4 +1,4 @@
-import { action, createMemo, createOptimistic, createStore, For, onSettled, Show } from "solid-js";
+import { createMemo, createSignal, For, onSettled, Show } from "solid-js";
 import type { NativeChromeExtensionSetupAction } from "../app/native-chrome-setup.ts";
 import type { LegacyChromeInstallResult } from "../app/native-device-settings.ts";
 import { projectNativeDeviceSettings } from "../lib/reactive/application-native.ts";
@@ -12,8 +12,8 @@ export function NativeChromeSetup() {
   const capability = useOptionalApplication()?.nativeDeviceSettings;
   const projection = capability ? projectNativeDeviceSettings(capability) : undefined;
   const browser = () => projection?.read()?.browser;
-  const [running, setRunning] = createOptimistic(false);
-  const [state, setState] = createStore<Omit<ChromeSetupStatusProps, "running">>({
+  const [state, setState] = createSignal<ChromeSetupStatusProps>({
+    running: false,
     failed: null,
     result: null,
     legacyResult: null,
@@ -36,54 +36,46 @@ export function NativeChromeSetup() {
     }
     return capability.installChromeExtension ? ["install"] : [];
   });
-  const setup = action(function* (setupAction: NativeChromeExtensionSetupAction) {
-    if (!host.isConnected || !capability || pending || !actions().includes(setupAction)) {
+  const setup = async (action: NativeChromeExtensionSetupAction) => {
+    if (!host.isConnected || !capability || pending || !actions().includes(action)) {
       return;
     }
     const isCurrent = () => !disposed && host.isConnected;
     pending = true;
-    setRunning(true);
-    setState((value) => {
-      value.failed = null;
-      value.result = null;
-      value.legacyResult = null;
-    });
+    setState({ running: true, failed: null, result: null, legacyResult: null });
     try {
       if (browser()?.chromeSetupActions === undefined) {
-        let request: Promise<LegacyChromeInstallResult>;
-        if (setupAction === "inspect" && capability.chromeExtensionStatus) {
-          request = capability.chromeExtensionStatus();
-        } else if (setupAction === "install" && capability.installChromeExtension) {
-          request = capability.installChromeExtension();
+        let legacyResult: LegacyChromeInstallResult;
+        if (action === "inspect" && capability.chromeExtensionStatus) {
+          legacyResult = await capability.chromeExtensionStatus();
+        } else if (action === "install" && capability.installChromeExtension) {
+          legacyResult = await capability.installChromeExtension();
         } else {
           return;
         }
-        yield request.then((legacyResult) => {
-          if (isCurrent() && actions().includes(setupAction)) {
-            setState((value) => {
-              value.legacyResult = legacyResult;
-            });
-          }
-        });
+        if (isCurrent() && actions().includes(action)) {
+          setState((value) => ({ ...value, legacyResult }));
+        }
       } else {
-        yield capability.setupChromeExtension(setupAction).then((result) => {
-          if (isCurrent() && actions().includes(setupAction)) {
-            setState((value) => {
-              value.result = result;
-            });
-          }
-        });
+        const result = await capability.setupChromeExtension(action);
+        if (isCurrent() && actions().includes(action)) {
+          setState((value) => ({ ...value, result }));
+        }
       }
     } catch {
       if (isCurrent()) {
-        setState((value) => {
-          value.failed = "setup";
-        });
+        setState((value) => ({
+          ...value,
+          failed: "setup",
+        }));
       }
     } finally {
-      pending = false;
+      if (isCurrent()) {
+        pending = false;
+        setState((value) => ({ ...value, running: false }));
+      }
     }
-  });
+  };
   const visibleActions = () =>
     (
       [
@@ -91,7 +83,7 @@ export function NativeChromeSetup() {
         ["inspect", "chromeExtensionRefresh"],
         ["verify", "chromeExtensionVerify"],
       ] as const
-    ).filter(([setupAction]) => actions().includes(setupAction));
+    ).filter(([action]) => actions().includes(action));
   return (
     <openclaw-native-chrome-setup ref={(element) => (host = element)}>
       <Show when={browser()}>
@@ -99,12 +91,12 @@ export function NativeChromeSetup() {
           <p>{t("configPage.deviceSettings.chromeExtensionHint")}</p>
           <div class="native-chrome-setup__actions">
             <For each={visibleActions()}>
-              {([setupAction, label]) => (
+              {([action, label]) => (
                 <button
                   type="button"
                   class="btn"
-                  disabled={running()}
-                  onClick={() => void setup(setupAction)}
+                  disabled={state().running}
+                  onClick={() => void setup(action)}
                 >
                   {t(`configPage.deviceSettings.${label}`)}
                 </button>
@@ -112,10 +104,10 @@ export function NativeChromeSetup() {
             </For>
           </div>
           <ChromeSetupStatus
-            result={state.result}
-            legacyResult={state.legacyResult}
-            running={running()}
-            failed={state.failed}
+            result={state().result}
+            legacyResult={state().legacyResult}
+            running={state().running}
+            failed={state().failed}
           />
         </div>
       </Show>
