@@ -115,59 +115,6 @@ export function stepPilot(
   return event satisfies never;
 }
 
-export type PilotMailbox = Readonly<{
-  capacity: number;
-  waiting: readonly PilotInput[];
-  retired: readonly string[];
-}>;
-export type PilotMailboxEvent = { type: "enqueue"; input: PilotInput; overflow: "old" | "new" };
-export function stepPilotMailbox(
-  state: PilotMailbox,
-  event: PilotMailboxEvent,
-): { state: PilotMailbox } {
-  if (
-    state.waiting.some((input) => input.id === event.input.id) ||
-    state.retired.includes(event.input.id)
-  ) {
-    return { state };
-  }
-  if (state.capacity <= 0 || state.waiting.length < state.capacity) {
-    return { state: { ...state, waiting: [...state.waiting, event.input] } };
-  }
-  const victim = event.overflow === "new" ? event.input : state.waiting[0];
-  if (!victim) {
-    throw new Error("A full mailbox must have an overflow victim");
-  }
-  return {
-    state: {
-      ...state,
-      waiting: event.overflow === "new" ? state.waiting : [...state.waiting.slice(1), event.input],
-      retired: [...state.retired, victim.id],
-    },
-  };
-}
-
-export type PilotParentInput = Readonly<{
-  id: string;
-  kind: "user" | "completion" | "settle";
-  owedAt: number;
-}>;
-
-/** Durable completion identities rebuild once; user inputs remain process-local FIFO entries. */
-export function modelParentMailbox(inputs: readonly PilotParentInput[]): PilotParentInput[] {
-  const owed = new Set<string>();
-  return inputs.filter((input) => {
-    if (input.kind === "user") {
-      return true;
-    }
-    if (owed.has(input.id)) {
-      return false;
-    }
-    owed.add(input.id);
-    return true;
-  });
-}
-
 export function pilotRandom(seed: number): (bound: number) => number {
   let value = (seed ^ 0x9e3779b9) >>> 0;
   return (bound) => {

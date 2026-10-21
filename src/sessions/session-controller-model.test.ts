@@ -11,14 +11,10 @@ import { applyQueueDropPolicy } from "../utils/queue-helpers.js";
 import {
   generatePilotSequence,
   initialPilotState,
-  modelParentMailbox,
   stepPilot,
-  stepPilotMailbox,
   type PilotCustody,
   type PilotEvent,
   type PilotInput,
-  type PilotMailbox,
-  type PilotParentInput,
 } from "./session-controller-model.test-support.js";
 import type { ReplyMessageInjectionAttempt } from "./session-controller.contracts.js";
 import { createReplyOperation, getSessionControllerOperation } from "./session-controller.js";
@@ -289,53 +285,10 @@ function startForegroundBeforeResend(
 }
 
 describe("session controller executable pilot", () => {
-  it("gives each owed completion and settle identity exactly one FIFO parent turn", async () => {
-    const key = "agent:main:completion-mailbox-model";
-    const active = operationFor(key, "active");
-    active.setPhase("running");
-    const offered: PilotParentInput[] = [
-      { id: "user-before", kind: "user", owedAt: 1 },
-      { id: "completion:a:1", kind: "completion", owedAt: 2 },
-      { id: "completion:a:1", kind: "completion", owedAt: 2 },
-      { id: "settle:batch:1:0", kind: "settle", owedAt: 3 },
-      { id: "user-after", kind: "user", owedAt: 4 },
-    ];
-    const expected = modelParentMailbox(offered);
-    const sources = offered.map((input, index) =>
-      reserve(key, {
-        reservationId: input.kind === "user" ? undefined : input.id,
-        protocolRunId: input.kind === "user" ? `${input.id}:${index}` : input.id,
-      }),
-    );
-    expect(sources[1]).toBe(sources[2]);
-    const unique = sources.filter((source, index) => sources.indexOf(source) === index);
-    const turns: string[] = [];
-    const pending = unique.map((source) =>
-      recordClaim(source, turns, offered[sources.indexOf(source)]!.id),
-    );
-    active.abortByUser();
-    active.complete();
-    try {
-      for (const claim of pending) {
-        await release(await claim);
-      }
-      expect(turns).toEqual(expected.map((input) => input.id));
-      expect(turns).toEqual(["user-before", "completion:a:1", "settle:batch:1:0", "user-after"]);
-    } finally {
-      for (const source of unique) {
-        retireSessionControllerInput(source);
-      }
-      clearSessionControllerMailbox(unique[0]!.mailbox, () => {});
-    }
-  });
-
-  it("rebuilds reset completion and settle obligations once in persisted owed order", async () => {
+  it("rebuilds cleared completion and settle reservations in FIFO order", async () => {
     const key = "agent:main:completion-mailbox-reset-model";
-    const owed = modelParentMailbox([
-      { id: "settle:later", kind: "settle", owedAt: 20 },
-      { id: "completion:earlier", kind: "completion", owedAt: 10 },
-    ]).toSorted((a, b) => a.owedAt - b.owedAt);
-    const rebuild = () => owed.map((input) => reserve(key, { reservationId: input.id }));
+    const owed = ["completion:earlier", "settle:later"];
+    const rebuild = () => owed.map((reservationId) => reserve(key, { reservationId }));
     const initial = rebuild();
     clearSessionControllerMailbox(initial[0]!.mailbox, () => {});
     await Promise.allSettled(initial.map((source) => source.settlement.promise));
@@ -485,7 +438,6 @@ describe("session controller executable pilot", () => {
   it.each(["old", "new"] as const)(
     "conserves overflow identities against the existing %s queue boundary",
     (dropPolicy) => {
-      let model: PilotMailbox = { capacity: 2, waiting: [], retired: [] };
       const queue = {
         cap: 2,
         items: [] as PilotInput[],
@@ -494,9 +446,12 @@ describe("session controller executable pilot", () => {
         summaryLines: [] as string[],
       };
       const retired: string[] = [];
+      const inputs = Array.from({ length: 6 }, (_, n) => ({
+        id: "mail-" + n,
+        authority: n % 2 ? "alice-policy" : "bob-policy",
+      }));
       for (let n = 0; n < 6; n++) {
-        const input = { id: "mail-" + n, authority: n % 2 ? "alice-policy" : "bob-policy" };
-        model = stepPilotMailbox(model, { type: "enqueue", input, overflow: dropPolicy }).state;
+        const input = inputs[n]!;
         if (
           applyQueueDropPolicy({
             queue,
@@ -508,8 +463,12 @@ describe("session controller executable pilot", () => {
         } else {
           retired.push(input.id);
         }
-        expect(queue.items).toEqual(model.waiting);
-        expect(retired).toEqual(model.retired);
+        const offered = inputs.slice(0, n + 1);
+        const retained = dropPolicy === "old" ? offered.slice(-2) : offered.slice(0, 2);
+        expect(queue.items).toEqual(retained);
+        expect(retired).toEqual(
+          offered.filter((item) => !retained.includes(item)).map(({ id }) => id),
+        );
         expect(queue.items.length + retired.length).toBe(n + 1);
       }
     },

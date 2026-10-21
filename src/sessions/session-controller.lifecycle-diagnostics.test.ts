@@ -14,6 +14,7 @@ import {
   type DiagnosticTraceContext,
 } from "../infra/diagnostic-trace-context.js";
 import { flushLogger, resetLogger, setLoggerOverride } from "../logging/logger.js";
+import { controllerGate as gate } from "./controller-core.test-support.js";
 import { logSessionControllerPhase as logPhase } from "./session-controller.diagnostics.js";
 import {
   beginSessionEffect as beginEffect,
@@ -77,19 +78,6 @@ async function advance(ms: number) {
   await vi.advanceTimersByTimeAsync(ms);
 }
 
-function gate(onEnter?: () => void) {
-  const [entered, release] = [createDeferred(), createDeferred()];
-  return {
-    entered: entered.promise,
-    release: release.resolve,
-    run: async () => {
-      onEnter?.();
-      entered.resolve();
-      await release.promise;
-    },
-  };
-}
-
 async function expectRecords(kind: RecordKind, rows: Record<string, unknown>[], unordered = false) {
   const actual = await records(kind);
   const expected = rows.map((row) => expect.objectContaining(row));
@@ -135,12 +123,7 @@ function hold(
           assertAllowed: held.run,
           revalidateAllowed: () => {},
         }).then((lease) => lease.release())
-      : runMutation({
-          ...target,
-          run: held.run,
-          policy: "wait",
-          diagnosticLabel: "sharing",
-        }),
+      : runMutation({ ...target, run: held.run, policy: "wait", diagnosticLabel: "sharing" }),
   );
   return { ...held, promise };
 }
@@ -366,10 +349,7 @@ it.each([true, false])(
       run: async () => {
         outerStarted.resolve();
         await beginNested.promise;
-        await mutate(target, traces.second, {
-          diagnosticLabel: "delete",
-          run: nested.run,
-        });
+        await mutate(target, traces.second, { diagnosticLabel: "delete", run: nested.run });
         nestedDone.resolve();
         await releaseOuter.promise;
       },
@@ -438,10 +418,7 @@ it("measures prepare and finalize separately while successors wait for real fina
         mutationQueueWaitMs: 0,
         lifecycleQueueWaitMs: 0,
       },
-      {
-        operationTraceId: traces.waiter.traceId,
-        mutationQueueWaitMs: 1_000,
-      },
+      { operationTraceId: traces.waiter.traceId, mutationQueueWaitMs: 1_000 },
     ],
     true,
   );
@@ -483,13 +460,7 @@ it("keeps canceled validator custody visible until the real callback returns", a
   }
   await expectRecords(
     "slow",
-    [
-      {
-        operationTraceId: traces.first.traceId,
-        signalAborted: true,
-        elapsedMs: 1_000,
-      },
-    ],
+    [{ operationTraceId: traces.first.traceId, signalAborted: true, elapsedMs: 1_000 }],
     true,
   );
 });

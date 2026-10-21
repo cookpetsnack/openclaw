@@ -8,9 +8,13 @@ import {
   tryBeginGatewayRootWorkAdmission,
   tryBeginGatewaySuspendAdmission,
 } from "../process/gateway-work-admission.js";
+import {
+  admissionGate as gate,
+  admissionTarget as target,
+  admitSession as admit,
+} from "./session-admission.test-support.js";
 import { cancelSessionEffectHandoff as cancelHandoff } from "./session-controller.lifecycle-observation.js";
 import {
-  beginSessionEffect as beginAdmission,
   consumeSessionEffectHandoff as consumeHandoff,
   getSessionMutationCount,
   getSessionControllerWorkCount,
@@ -22,45 +26,32 @@ import {
   runSessionMutation as mutate,
 } from "./session-controller.lifecycle.js";
 
-type Target = { scope: string; identities: (string | undefined)[] };
-function target(scope: string, ...identities: (string | undefined)[]): Target {
-  return { scope, identities };
-}
-function admit(params: Parameters<typeof beginAdmission>[0]) {
-  return beginAdmission({ assertAllowed: () => {}, ...params });
-}
+type Target = ReturnType<typeof target>;
 function holdMutation(
   owner: Target | { targets: Target[] },
   options: { kind?: "compaction"; prepare?: boolean } = {},
 ) {
-  const started = createDeferred();
-  const release = createDeferred();
-  const wait = async () => {
-    started.resolve();
-    await release.promise;
-  };
+  const barrier = gate();
   const mutation = mutate({
     ...owner,
     kind: options.kind,
-    run: options.prepare ? async () => {} : wait,
-    ...(options.prepare ? { prepare: wait } : {}),
+    run: options.prepare ? async () => {} : barrier.wait,
+    ...(options.prepare ? { prepare: barrier.wait } : {}),
   });
-  return { started: started.promise, release: release.resolve, mutation };
+  return { started: barrier.entered, release: barrier.release, mutation };
 }
 const childTarget = { scope: "store-a", identities: ["agent:main:child", "session-1"] };
 
 it("validates default admission once after earlier store writes", async () => {
   const scope = "store-default-validation-order";
-  const entered = createDeferred();
-  const releaseWriter = createDeferred();
+  const barrier = gate();
   let value = "before";
   const observations: string[] = [];
   const writer = runExclusiveSessionStoreWrite(scope, async () => {
-    entered.resolve();
-    await releaseWriter.promise;
+    await barrier.wait();
     value = "after";
   });
-  await entered.promise;
+  await barrier.entered;
   const pending = admit({
     scope,
     identities: ["session-default-validation-order"],
@@ -70,7 +61,7 @@ it("validates default admission once after earlier store writes", async () => {
     await waitForImmediate();
     expect(observations).toEqual([]);
   } finally {
-    releaseWriter.resolve();
+    barrier.release();
     (await pending).release();
     await writer;
   }
@@ -85,13 +76,9 @@ it.each([
   async ({ label, reason }) => {
     const scope = `store-cancel-validation-${label}`;
     const identities = ["session-cancel-validation"];
-    const entered = createDeferred();
-    const releaseWriter = createDeferred();
-    const writer = runExclusiveSessionStoreWrite(scope, async () => {
-      entered.resolve();
-      await releaseWriter.promise;
-    });
-    await entered.promise;
+    const barrier = gate();
+    const writer = runExclusiveSessionStoreWrite(scope, barrier.wait);
+    await barrier.entered;
     const controller = new AbortController();
     const assertAllowed = vi.fn();
     const pending = admit({ scope, identities, signal: controller.signal, assertAllowed });
@@ -109,7 +96,7 @@ it.each([
       expect(assertAllowed).not.toHaveBeenCalled();
       expect(workActive(scope, identities)).toBe(false);
     } finally {
-      releaseWriter.resolve();
+      barrier.release();
       await writer;
     }
     expect(assertAllowed).not.toHaveBeenCalled();
@@ -118,18 +105,14 @@ it.each([
 
 it("joins an admitted validator before releasing cancelled effect custody", async () => {
   const owner = target("store-admitted-validation", "session-admitted-validation");
-  const entered = createDeferred();
-  const releaseValidator = createDeferred();
+  const barrier = gate();
   const controller = new AbortController();
   const reason = "cancel admitted validation";
   let completed = false;
   const pending = admit({
     ...owner,
     signal: controller.signal,
-    assertAllowed: async () => {
-      entered.resolve();
-      await releaseValidator.promise;
-    },
+    assertAllowed: barrier.wait,
   });
   const outcome = pending.then(
     (ref) => {
@@ -142,16 +125,16 @@ it("joins an admitted validator before releasing cancelled effect custody", asyn
     },
   );
   try {
-    await entered.promise;
+    await barrier.entered;
     controller.abort(reason);
     await waitForImmediate();
     expect(completed).toBe(false);
     expect(workActive(owner.scope, owner.identities)).toBe(true);
-    releaseValidator.resolve();
+    barrier.release();
     await expect(outcome).resolves.toBe(reason);
     expect(workActive(owner.scope, owner.identities)).toBe(false);
   } finally {
-    releaseValidator.resolve();
+    barrier.release();
     await outcome;
   }
 });
@@ -208,24 +191,20 @@ it("keeps an admission handoff bound to its original identities", async () => {
 
 it("keeps a same-identity mutation queued until finalization completes", async () => {
   const owner = { scope: "store-finalize-order", identities: ["session-finalize-order"] };
-  const finalizeStarted = createDeferred();
-  const releaseFinalize = createDeferred();
+  const barrier = gate();
   const secondRun = vi.fn(async () => {});
   const first = mutate({
     ...owner,
     run: async () => {},
-    finalize: async () => {
-      finalizeStarted.resolve();
-      await releaseFinalize.promise;
-    },
+    finalize: barrier.wait,
   });
-  await finalizeStarted.promise;
+  await barrier.entered;
   const second = mutate({ ...owner, run: secondRun });
   try {
     await waitForImmediate();
     expect(secondRun).not.toHaveBeenCalled();
   } finally {
-    releaseFinalize.resolve();
+    barrier.release();
     await Promise.all([first, second]);
   }
   expect(secondRun).toHaveBeenCalledOnce();
@@ -444,8 +423,7 @@ it("admits an independent session while revalidating a conflicting writer's auth
   const independentKey = "agent:main:independent";
   const releaseWriter = createDeferred();
   const initialValidation = createDeferred();
-  const independentEntered = createDeferred();
-  const releaseIndependent = createDeferred();
+  const independentBarrier = gate();
   let allowed = true;
   const validateBlocked = vi.fn(() => {
     if (!allowed) {
@@ -476,14 +454,11 @@ it("admits an independent session while revalidating a conflicting writer's auth
     scope,
     identities: [independentKey, "independent-id"],
     storeWriterIdentities: [independentKey],
-    revalidateAllowed: async () => {
-      independentEntered.resolve();
-      await releaseIndependent.promise;
-    },
+    revalidateAllowed: independentBarrier.wait,
   });
 
   try {
-    await independentEntered.promise;
+    await independentBarrier.entered;
     expect(validateBlocked).toHaveBeenCalledTimes(1);
     releaseWriter.resolve();
     await writer;
@@ -491,11 +466,11 @@ it("admits an independent session while revalidating a conflicting writer's auth
     expect(validateBlocked).toHaveBeenCalledTimes(2);
     expect(workActive(scope, [blockedKey])).toBe(false);
     expect(workActive(scope, [independentKey])).toBe(true);
-    releaseIndependent.resolve();
+    independentBarrier.release();
     (await independent).release();
   } finally {
     releaseWriter.resolve();
-    releaseIndependent.resolve();
+    independentBarrier.release();
     const results = await Promise.allSettled([blocked, independent]);
     for (const result of results) {
       if (result.status === "fulfilled") {

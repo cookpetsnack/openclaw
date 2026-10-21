@@ -1,20 +1,25 @@
 import { afterEach, expect, it } from "vitest";
 import { createDeferred } from "../../test/helpers/promise.js";
+import {
+  controllerSource as reserve,
+  controllerTarget,
+  controllerTurn as turnParams,
+} from "./controller-core.test-support.js";
 import { withSessionTurn } from "./session-controller.admission.js";
 import { ReplyRunAlreadyActiveError } from "./session-controller.contracts.js";
 import { captureSessionTarget, runSessionMutation } from "./session-controller.lifecycle.js";
 import {
-  abortSessionControllerInput,
-  claimSessionControllerTask,
-  releaseSessionControllerClaim,
-  reserveSessionControllerSource,
-  retireSessionControllerInput,
-  tryClaimSessionControllerTask,
-  trackSessionControllerSourceWork,
+  abortSessionControllerInput as abortInput,
+  claimSessionControllerTask as claimTask,
+  releaseSessionControllerClaim as releaseClaim,
+  reserveSessionControllerSource as reserveSource,
+  retireSessionControllerInput as retireInput,
+  tryClaimSessionControllerTask as tryClaim,
+  trackSessionControllerSourceWork as trackWork,
 } from "./session-controller.mailbox.js";
 import { createReplyOperation } from "./session-controller.operation.js";
 import {
-  getSessionControllerEntry,
+  getSessionControllerEntry as getEntry,
   sessionControllers,
   type SessionControllerEntry,
 } from "./session-controller.state.js";
@@ -25,40 +30,17 @@ afterEach(() => {
 });
 
 function targetFor(label: string, incarnation = `${label}-session`) {
-  return captureSessionTarget({
-    storeScope: `/synthetic/${label}/sessions.json`,
-    sessionKey: `agent:main:${label}`,
-    incarnation,
-  });
-}
-
-function reserve(
-  target: ReturnType<typeof targetFor>,
-  options: Partial<Parameters<typeof reserveSessionControllerSource>[1]> = {},
-) {
-  return reserveSessionControllerSource(target.sessionKey, {
-    target,
-    policy: { mode: "followup" },
-    ...options,
-  });
-}
-
-function turnParams(target: ReturnType<typeof targetFor>, materialize = true) {
-  return {
-    target,
-    sessionKey: target.sessionKey,
-    ...(materialize ? { sessionId: target.incarnation } : {}),
-  };
+  return controllerTarget(`/synthetic/${label}/sessions.json`, `agent:main:${label}`, incarnation);
 }
 
 async function releaseInput(
   input: ReturnType<typeof reserve>,
-  pending: ReturnType<typeof claimSessionControllerTask>,
+  pending: ReturnType<typeof claimTask>,
 ) {
-  retireSessionControllerInput(input);
+  retireInput(input);
   const claim = await pending.catch(() => undefined);
   if (claim) {
-    releaseSessionControllerClaim(claim);
+    releaseClaim(claim);
   }
   await input.settlement.promise;
 }
@@ -76,10 +58,7 @@ it("runs a turn its own mutation requests ahead of the inputs that mutation keep
     preempt: { activeRun: "abort-if-abortable", waitingInputs: "keep" },
     run: async () => {
       const turn = withSessionTurn(
-        {
-          ...turnParams(target),
-          abortSignal: cancel.signal,
-        },
+        { ...turnParams(target), abortSignal: cancel.signal },
         async (operation) => {
           order.push("mutation turn");
           return operation?.key;
@@ -87,12 +66,12 @@ it("runs a turn its own mutation requests ahead of the inputs that mutation keep
       );
       void turn.catch(() => {});
       // The selector claims synchronously, so a refused turn is visible here instead of hanging.
-      const selected = getSessionControllerEntry(target.sessionKey, target).mailbox?.claim;
+      const selected = getEntry(target.sessionKey, target).mailbox?.claim;
       expect(selected?.inputs.includes(kept)).toBe(false);
       return await turn;
     },
   });
-  const keptClaim = claimSessionControllerTask(kept, () => order.push("kept input"));
+  const keptClaim = claimTask(kept, () => order.push("kept input"));
   try {
     await expect(compaction).resolves.toBe(target.sessionKey);
     await keptClaim;
@@ -145,10 +124,7 @@ it.each([false, true])(
     const caller = new AbortController();
     await withSessionTurn(turnParams(target, false), async (_, outerSignal) => {
       await withSessionTurn(
-        {
-          ...turnParams(target, materialize),
-          abortSignal: caller.signal,
-        },
+        { ...turnParams(target, materialize), abortSignal: caller.signal },
         async (operation, signal) => {
           caller.abort("nested caller cancelled");
           expect(signal).toMatchObject({ aborted: true, reason: "nested caller cancelled" });
@@ -169,7 +145,7 @@ it.each([false, true])(
       incarnation: "incarnation",
     });
     const params = turnParams(target, materialize);
-    let input: ReturnType<typeof reserveSessionControllerSource> | undefined;
+    let input: ReturnType<typeof reserveSource> | undefined;
     let nested: Promise<void> | undefined;
     let nestedStarted = false;
     let nestedOwnedInput = false;
@@ -190,7 +166,7 @@ it.each([false, true])(
       expect(nestedOwnedInput).toBe(true);
     } finally {
       if (input) {
-        retireSessionControllerInput(input);
+        retireInput(input);
         await input.settlement.promise;
       }
       await nested;
@@ -221,7 +197,7 @@ it.each(turnKinds)(
         turnKind: kind,
       });
     };
-    retireSessionControllerInput(input);
+    retireInput(input);
     try {
       await cleanupStarted.promise;
       expect(create).toThrow(ReplyRunAlreadyActiveError);
@@ -241,13 +217,13 @@ it("keeps interrupt execution behind a cancelled unclaimed source's raw cleanup"
   const target = targetFor("retiring-admission");
   const cleanup = createDeferred();
   const predecessor = reserve(target);
-  trackSessionControllerSourceWork(predecessor, cleanup.promise);
-  abortSessionControllerInput(predecessor, new Error("interrupt"));
+  trackWork(predecessor, cleanup.promise);
+  abortInput(predecessor, new Error("interrupt"));
   const successor = reserve(target, {
     policy: { mode: "interrupt" },
   });
   let started = false;
-  const pending = claimSessionControllerTask(successor, () => {
+  const pending = claimTask(successor, () => {
     started = true;
   });
   try {
@@ -274,13 +250,13 @@ it.each(
   async ({ kind, deliveryPending }) => {
     const blocked = deliveryPending && (kind === "heartbeat" || kind === "queued_followup");
     const sessionKey = `agent:main:admission-parity:${kind}:${deliveryPending}`;
-    const entry = getSessionControllerEntry(sessionKey);
-    const input = reserveSessionControllerSource(sessionKey, { policy: { mode: "followup" } });
+    const entry = getEntry(sessionKey);
+    const input = reserveSource(sessionKey, { policy: { mode: "followup" } });
     if (deliveryPending) {
       entry.followupBarrier = {} as NonNullable<SessionControllerEntry["followupBarrier"]>;
     }
 
-    const claim = tryClaimSessionControllerTask(input, kind);
+    const claim = tryClaim(input, kind);
     expect(Boolean(claim)).toBe(!blocked);
     let operation: ReturnType<typeof createReplyOperation> | undefined;
     const create = () => {
@@ -300,11 +276,11 @@ it.each(
 
     operation?.complete();
     if (claim) {
-      releaseSessionControllerClaim(claim);
+      releaseClaim(claim);
       await claim.settlement.promise;
     } else {
       entry.followupBarrier = undefined;
-      retireSessionControllerInput(input);
+      retireInput(input);
       await input.settlement.promise;
     }
   },

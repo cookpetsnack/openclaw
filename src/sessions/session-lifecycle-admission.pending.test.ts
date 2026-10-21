@@ -1,9 +1,10 @@
 import { expect, it, vi } from "vitest";
-import { createDeferred, withinTest } from "../../test/helpers/promise.js";
+import { withinTest } from "../../test/helpers/promise.js";
 import {
   createAgentRunDirectAbortError,
   createAgentRunRestartAbortError,
 } from "../agents/run-termination.js";
+import { admissionGate as gate, admitSession as admit } from "./session-admission.test-support.js";
 import { runWithSessionControllerCleanup } from "./session-controller.cleanup-context.js";
 import {
   beginSessionEffect as beginAdmission,
@@ -22,25 +23,11 @@ import {
   startSessionControllerInterruption as startInterruption,
 } from "./session-controller.lifecycle.js";
 
-const admit = (params: Parameters<typeof beginAdmission>[0]) =>
-  beginAdmission({ assertAllowed: () => {}, ...params });
 function makeTarget<T extends string[]>(scope: string, ...identities: T) {
   return { scope, identities };
 }
 function ownedTarget(scope: string, ...identities: string[]) {
   return { ...makeTarget(scope, ...identities), owner: Symbol(scope), serializeOwner: true };
-}
-function gate() {
-  const entered = createDeferred();
-  const release = createDeferred();
-  return {
-    entered: entered.promise,
-    release: release.resolve,
-    wait: async () => {
-      entered.resolve();
-      await release.promise;
-    },
-  };
 }
 function admissionOutcome(pending: ReturnType<typeof beginAdmission>) {
   return pending.then(

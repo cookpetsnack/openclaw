@@ -1,6 +1,11 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { diagnosticLogger } from "../logging/diagnostic-runtime.js";
 import { createDeferredCore } from "../shared/deferred.js";
+import {
+  controllerSource as reserve,
+  controllerTarget,
+  controllerTurn as turn,
+} from "./controller-core.test-support.js";
 import { withSessionTurn } from "./session-controller.admission.js";
 import { ReplyRunAlreadyActiveError } from "./session-controller.contracts.js";
 import {
@@ -44,17 +49,7 @@ import {
 
 const key = "agent:main:physical-identity";
 const target = (storeScope: string, sessionKey = key, incarnation = "incarnation") =>
-  captureTarget({ storeScope, sessionKey, incarnation });
-function reserve(
-  physical: ReturnType<typeof captureTarget>,
-  options: Partial<Parameters<typeof reserveSource>[1]> = {},
-) {
-  return reserveSource(physical.sessionKey, {
-    target: physical,
-    policy: { mode: "followup" },
-    ...options,
-  });
-}
+  controllerTarget(storeScope, sessionKey, incarnation);
 function adopt(
   input: Parameters<typeof adoptSource>[0],
   physical: ReturnType<typeof captureTarget>,
@@ -69,9 +64,6 @@ function adopt(
   });
 }
 
-function turn(physical: ReturnType<typeof captureTarget>) {
-  return { sessionKey: physical.sessionKey, sessionId: physical.incarnation, target: physical };
-}
 const unboundTarget = (storeScope: string) => captureTarget({ storeScope, sessionKey: key });
 function releaseAndWait(claim: Awaited<ReturnType<typeof claimTask>>) {
   releaseClaim(claim);
@@ -120,10 +112,7 @@ it("treats equal active identities in two stores as busy and mutates only the se
   expect(ownerB).toBeDefined();
   expect(ownerA).not.toBe(ownerB);
   using warning = vi.spyOn(diagnosticLogger, "warn").mockImplementation(() => undefined);
-  expect(resolveRun("incarnation")).toEqual({
-    kind: "ambiguous",
-    operations: [ownerA, ownerB],
-  });
+  expect(resolveRun("incarnation")).toEqual({ kind: "ambiguous", operations: [ownerA, ownerB] });
   expect(isSessionRunActive("incarnation")).toBe(true);
   for (const lookup of [
     () => resolveActiveRun("incarnation"),
@@ -219,10 +208,7 @@ it("keeps nested raw-key turns owned by separate agents in one physical store", 
 
 it("deduplicates one reserved delivery identity and rejects conflicting reuse", () => {
   const physical = target("/stores/reservation.sqlite");
-  const reservation = {
-    reservationId: "subagent-completion:run-1:0",
-    protocolRunId: "run-1",
-  };
+  const reservation = { reservationId: "subagent-completion:run-1:0", protocolRunId: "run-1" };
   const first = reserve(physical, reservation);
   const second = reserve(physical, reservation);
 
@@ -247,10 +233,7 @@ it("adopts only the exact unclaimed reserved source", async () => {
     "foreign or claimed",
   );
   adopt(input, physical, { adapter });
-  expect(sourceIdentity(input)).toMatchObject({
-    sessionKey: key,
-    sessionId: "incarnation",
-  });
+  expect(sourceIdentity(input)).toMatchObject({ sessionKey: key, sessionId: "incarnation" });
   expect(input).toMatchObject({ protocolRunId: "settle-run", custody: { rpcAdopted: true } });
   expect(input.sourceAdapter).toBe(adapter);
   expect(() => adopt(input, physical, { adapter })).toThrow("foreign or claimed");
