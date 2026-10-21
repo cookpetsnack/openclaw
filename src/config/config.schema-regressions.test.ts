@@ -1,8 +1,20 @@
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 import { validateConfigObject } from "./validation.js";
 
 function agentTools(tools: Record<string, unknown>) {
   return { agents: { entries: { main: { tools } } } };
+}
+
+function validConfig(config: unknown) {
+  const result = validateConfigObject(config);
+  assert(result.ok, "Expected valid config");
+  return result.config;
+}
+
+function expectIssue(config: unknown, path: string) {
+  const result = validateConfigObject(config);
+  assert(!result.ok, "Expected invalid config");
+  expect(result.issues.some((issue) => issue.path.startsWith(path))).toBe(true);
 }
 
 function validateBinding(agentId: string, entries: Record<string, unknown>) {
@@ -24,14 +36,11 @@ describe("config schema regressions", () => {
       "../team-notes",
       { path: "../shared", pattern: "runbooks/**/*.md", evergreen: true },
     ];
-    const result = validateConfigObject({
+    const config = validConfig({
       memory: { search: { extraPaths } },
       agents: { entries: { main: {} } },
     });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.config.memory?.search?.extraPaths).toEqual(extraPaths);
-    }
+    expect(config.memory?.search?.extraPaths).toEqual(extraPaths);
   });
 
   it.each([
@@ -40,26 +49,17 @@ describe("config schema regressions", () => {
     { path: "../shared", evergreen: "yes" },
     { path: "../shared", name: "legacy-qmd-name" },
   ])("rejects invalid extra memory path object %j", (entry) => {
-    const result = validateConfigObject({
-      memory: { search: { extraPaths: [entry] } },
-      agents: { entries: { main: {} } },
-    });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.issues.some((issue) => issue.path.startsWith("memory.search.extraPaths"))).toBe(
-        true,
-      );
-    }
+    expectIssue(
+      { memory: { search: { extraPaths: [entry] } }, agents: { entries: { main: {} } } },
+      "memory.search.extraPaths",
+    );
   });
 
   it.each([["ops"], ["ops-*"], [], ["*"]].map((send) => ({ send })))(
     "accepts per-agent send destinations $send",
     ({ send }) => {
-      const result = validateConfigObject(agentTools({ agentToAgent: { send } }));
-      expect(result.ok).toBe(true);
-      if (result.ok) {
-        expect(result.config.agents?.entries?.main?.tools?.agentToAgent?.send).toEqual(send);
-      }
+      const config = validConfig(agentTools({ agentToAgent: { send } }));
+      expect(config.agents?.entries?.main?.tools?.agentToAgent?.send).toEqual(send);
     },
   );
 
@@ -71,11 +71,8 @@ describe("config schema regressions", () => {
   );
 
   it("preserves the global exec approval notice delay (#115101)", () => {
-    const result = validateConfigObject({ tools: { exec: { approvalRunningNoticeMs: 0 } } });
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.config.tools?.exec?.approvalRunningNoticeMs).toBe(0);
-    }
+    const config = validConfig({ tools: { exec: { approvalRunningNoticeMs: 0 } } });
+    expect(config.tools?.exec?.approvalRunningNoticeMs).toBe(0);
   });
 
   it("accepts exact main bindings when the roster omits main (#89419)", () => {
@@ -101,33 +98,22 @@ describe("config schema regressions", () => {
   });
 
   it("accepts persisted Foundry thinkingLevelMap (#91011)", () => {
-    expect(
-      validateConfigObject({
-        models: {
-          providers: {
-            "microsoft-foundry": {
-              models: [
-                {
-                  id: "gpt-5.1-chat",
-                  name: "gpt-5.1-chat",
-                  api: "openai-responses",
-                  reasoning: true,
-                  thinkingLevelMap: {
-                    off: "none",
-                    minimal: null,
-                    low: "low",
-                    medium: "medium",
-                    high: "high",
-                    xhigh: null,
-                    max: null,
-                  },
-                },
-              ],
-            },
-          },
-        },
-      }).ok,
-    ).toBe(true);
+    const model = {
+      id: "gpt-5.1-chat",
+      name: "gpt-5.1-chat",
+      api: "openai-responses",
+      reasoning: true,
+      thinkingLevelMap: {
+        off: "none",
+        minimal: null,
+        low: "low",
+        medium: "medium",
+        high: "high",
+        xhigh: null,
+        max: null,
+      },
+    };
+    validConfig({ models: { providers: { "microsoft-foundry": { models: [model] } } } });
   });
 
   it.each([

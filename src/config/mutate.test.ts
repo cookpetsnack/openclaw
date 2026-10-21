@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import * as tmpDirOwner from "../infra/tmp-openclaw-dir.js";
+import { createDeferredCore } from "../shared/deferred.js";
 import { createSuiteTempRootTracker } from "../test-helpers/temp-dir.js";
 import { withEnvAsync } from "../test-utils/env.js";
 import {
@@ -367,21 +368,16 @@ describe("config mutate helpers", () => {
       .mockResolvedValue(readResult(fresh));
     ioMocks.writeConfigFile.mockResolvedValue(undefined);
 
-    let releaseFirstTransform!: () => void;
-    let markFirstTransformStarted!: () => void;
-    const firstTransformStarted = new Promise<void>((resolve) => {
-      markFirstTransformStarted = resolve;
-    });
+    const started = createDeferredCore();
+    const release = createDeferredCore();
     const first = transformConfigFileWithRetry({
       transform: async (config) => {
-        markFirstTransformStarted();
-        await new Promise<void>((release) => {
-          releaseFirstTransform = release;
-        });
+        started.resolve();
+        await release.promise;
         return { nextConfig: { ...config, ...agentConfig({ first: {} }) } };
       },
     });
-    await firstTransformStarted;
+    await started.promise;
     const second = transformConfigFileWithRetry({
       transform: (config) => ({
         nextConfig: {
@@ -394,7 +390,7 @@ describe("config mutate helpers", () => {
     await Promise.resolve();
     expect(ioMocks.readConfigFileSnapshotForWrite).toHaveBeenCalledTimes(1);
 
-    releaseFirstTransform();
+    release.resolve();
     await Promise.all([first, second]);
     expect(ioMocks.writeConfigFile).toHaveBeenNthCalledWith(
       2,

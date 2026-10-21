@@ -73,9 +73,7 @@ function expectInvalid(result: ConfigResult): asserts result is ConfigResult & {
 }
 
 function expectMessage(entries: Diagnostics, pathValue: string, message: string) {
-  expect(entries?.some((entry) => entry.path === pathValue && entry.message === message)).toBe(
-    true,
-  );
+  expect(entries).toContainEqual(expect.objectContaining({ path: pathValue, message }));
 }
 
 function expectIncludes(entries: Diagnostics, pathValue: string, fragment: string) {
@@ -298,6 +296,10 @@ describe("config plugin validation", () => {
       defaults: Record<string, unknown>,
       entries: Record<string, unknown> = { openclaw: {} },
     ) => ({ defaults, entries });
+    const explicitAgents = (
+      entries: Record<string, unknown>,
+      defaults: Record<string, unknown> = { systemAgent: { agentId: "openclaw" } },
+    ) => ({ agents: { ownership: "explicit", defaults, entries } });
     const providerModels = (id: string, baseUrl = "https://api.openai.com/v1") => ({
       providers: { openai: { baseUrl, models: [], agentRuntime: { id } } },
     });
@@ -337,25 +339,34 @@ describe("config plugin validation", () => {
         ),
       ).toBe(expected);
     };
+    const expectCodexRequirement = (
+      config: Record<string, unknown>,
+      warns = true,
+      env = suiteEnv(),
+    ) => {
+      const result = validateMissingCodex(config, env);
+      expect(result.ok).toBe(true);
+      expectMissingCodexPluginWarning(result.warnings, warns);
+    };
 
     it.each([
       ["string harness primary", "openai/gpt-5.6", false],
       ["native Codex fallback", modelSelection(openai, [codex]), true],
     ] as const)("uses native plugin requirements for ACP %s", (_name, model, needsCodex) => {
-      const result = validateMissingCodex({
-        agents: {
-          ownership: "explicit",
-          defaults: { model: modelSelection(anthropic) },
-          entries: { worker: { runtime: { type: "acp", acp: { agent: "cursor" } }, model } },
-        },
-      });
-      expect(result).toMatchObject({ ok: true });
-      const missingCodexWarnings = (result.warnings ?? []).filter(
-        (warning) =>
-          warning.path === "plugins.entries.codex" &&
-          warning.message.includes("plugin not installed: codex"),
+      const result = validateMissingCodex(
+        explicitAgents(
+          { worker: { runtime: { type: "acp", acp: { agent: "cursor" } }, model } },
+          { model: modelSelection(anthropic) },
+        ),
       );
-      expect(missingCodexWarnings).toHaveLength(needsCodex ? 1 : 0);
+      expect(result.ok).toBe(true);
+      expect(
+        (result.warnings ?? []).filter(
+          ({ path: issuePath, message }) =>
+            issuePath === "plugins.entries.codex" &&
+            message.includes("plugin not installed: codex"),
+        ),
+      ).toHaveLength(needsCodex ? 1 : 0);
     });
 
     it.each([
@@ -388,16 +399,10 @@ describe("config plugin validation", () => {
       ],
       [
         "scopes request-parameter diagnostics to the affected keyed agent",
-        {
-          agents: {
-            ownership: "explicit",
-            defaults: { systemAgent: { agentId: "openclaw" } },
-            entries: {
-              openclaw: agentWithSubagent(anthropic),
-              work: { ...agentWithSubagent(openai), params: { temperature: 0.4 } },
-            },
-          },
-        },
+        explicitAgents({
+          openclaw: agentWithSubagent(anthropic),
+          work: { ...agentWithSubagent(openai), params: { temperature: 0.4 } },
+        }),
         false,
       ],
       [
@@ -446,27 +451,20 @@ describe("config plugin validation", () => {
       ],
       [
         "does not attribute keyed agent model refs to another agent",
-        {
-          agents: {
-            ownership: "explicit",
-            defaults: { systemAgent: { agentId: "openclaw" } },
-            entries: {
-              openclaw: agentWithSubagent(anthropic),
-              ops: { ...agentWithSubagent(anthropic), models: runtimePolicy(openai, "pi") },
-            },
-          },
-        },
+        explicitAgents({
+          openclaw: agentWithSubagent(anthropic),
+          ops: { ...agentWithSubagent(anthropic), models: runtimePolicy(openai, "pi") },
+        }),
         false,
       ],
       [
         "warns when a default exact Codex policy remains reachable by another agent",
         {
           models: providerModels("pi"),
-          agents: {
-            ownership: "explicit",
-            defaults: { model: modelSelection(openai), models: runtimePolicy(openai, "codex") },
-            entries: { openclaw: { models: runtimePolicy("openai/gpt-5.6", "pi") }, worker: {} },
-          },
+          ...explicitAgents(
+            { openclaw: { models: runtimePolicy(openai, "pi") }, worker: {} },
+            { model: modelSelection(openai), models: runtimePolicy(openai, "codex") },
+          ),
         },
         true,
       ],
@@ -494,17 +492,13 @@ describe("config plugin validation", () => {
         true,
       ],
     ] as const)("%s", (_name, config, warns) => {
-      const res = validateMissingCodex(config);
-      expect(res.ok).toBe(true);
-      expectMissingCodexPluginWarning(res.warnings, warns);
+      expectCodexRequirement(config, warns);
     });
 
     it("warns when the utility model needs Codex", () => {
-      const res = validateMissingCodex({
+      expectCodexRequirement({
         agents: agents({ model: modelSelection(anthropic), utilityModel: codex }),
       });
-      expect(res.ok).toBe(true);
-      expectMissingCodexPluginWarning(res.warnings);
     });
 
     it("keeps the two-argument diagnostic API correct for a legacy list", () => {
@@ -525,29 +519,25 @@ describe("config plugin validation", () => {
     ] as const)(
       "uses provider %s / wildcard %s precedence",
       (providerRuntime, wildcardRuntime, warns) => {
-        const res = validateMissingCodex({
-          models: providerModels(providerRuntime),
-          agents: agents({ models: runtimePolicy("openai/*", wildcardRuntime) }),
-        });
-        expect(res.ok).toBe(true);
-        expectMissingCodexPluginWarning(res.warnings, warns);
+        expectCodexRequirement(
+          {
+            models: providerModels(providerRuntime),
+            agents: agents({ models: runtimePolicy("openai/*", wildcardRuntime) }),
+          },
+          warns,
+        );
       },
     );
 
     it("uses the validation environment snapshot for implicit OpenAI routing", () => {
-      const config = {};
-      const customEnv = {
+      expectCodexRequirement({}, false, {
         ...suiteEnv(),
         OPENAI_BASE_URL: "https://proxy.example.invalid/v1",
-      };
-      const platformEnv = { ...suiteEnv(), OPENAI_BASE_URL: "https://api.openai.com/v1" };
-
-      const customResult = validateMissingCodex(config, customEnv);
-      const platformResult = validateMissingCodex(config, platformEnv);
-      expect(customResult.ok).toBe(true);
-      expectMissingCodexPluginWarning(customResult.warnings, false);
-      expect(platformResult.ok).toBe(true);
-      expectMissingCodexPluginWarning(platformResult.warnings);
+      });
+      expectCodexRequirement({}, true, {
+        ...suiteEnv(),
+        OPENAI_BASE_URL: "https://api.openai.com/v1",
+      });
     });
   });
 

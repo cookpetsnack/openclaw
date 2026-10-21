@@ -33,13 +33,14 @@ function expectInvalidApiKey(apiKey: unknown, message: string) {
 
 describe("config secret refs schema", () => {
   it("accepts top-level secrets sources and model apiKey refs", () => {
+    const egressProxy = {
+      enabled: true,
+      allowedHosts: ["api.example.com"],
+      bypassHosts: ["pinned.example.com"],
+    };
     const result = validateConfigObjectRaw({
       secrets: {
-        egressProxy: {
-          enabled: true,
-          allowedHosts: ["api.example.com"],
-          bypassHosts: ["pinned.example.com"],
-        },
+        egressProxy: structuredClone(egressProxy),
         providers: {
           default: { source: "env" },
           filemain: {
@@ -71,11 +72,7 @@ describe("config secret refs schema", () => {
 
     expect(result.ok).toBe(true);
     if (result.ok) {
-      expect(result.config.secrets?.egressProxy).toEqual({
-        enabled: true,
-        allowedHosts: ["api.example.com"],
-        bypassHosts: ["pinned.example.com"],
-      });
+      expect(result.config.secrets?.egressProxy).toEqual(egressProxy);
     }
   });
 

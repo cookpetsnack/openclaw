@@ -571,27 +571,13 @@ describe("applyPluginAutoEnable core", () => {
     expect(second).not.toBe(first);
   });
 
-  it("respects explicit disable", () => {
-    const result = autoEnable(slackConfig({ entries: { slack: { enabled: false, config: {} } } }));
-
-    expect(result.config.plugins?.entries?.slack?.enabled).toBe(false);
-    expect(result.changes).toStrictEqual([]);
-  });
-
-  it("respects built-in channel explicit disable via channels.<id>.enabled", () => {
-    const result = autoEnable({ channels: { slack: { botToken: "x", enabled: false } } });
-
-    expect(result.config.channels?.slack?.enabled).toBe(false);
-    expect(result.config.plugins?.entries?.slack).toBeUndefined();
-    expect(result.changes).toStrictEqual([]);
-  });
-
-  it("does not auto-enable plugin channels when only enabled=false is set", () => {
-    const result = autoEnable({ channels: { matrix: { enabled: false } } }, [
-      { id: "matrix", channels: ["matrix"] },
-    ]);
-
-    expect(result.config.plugins?.entries?.matrix).toBeUndefined();
+  it.each<[OpenClawConfig, ManifestPlugin[]?]>([
+    [slackConfig({ entries: { slack: { enabled: false, config: {} } } })],
+    [{ channels: { slack: { botToken: "x", enabled: false } } }],
+    [{ channels: { matrix: { enabled: false } } }, [{ id: "matrix", channels: ["matrix"] }]],
+  ])("respects explicit disablement: %j", (config, plugins) => {
+    const result = autoEnable(config, plugins);
+    expect(result.config).toEqual(config);
     expect(result.changes).toStrictEqual([]);
   });
 
