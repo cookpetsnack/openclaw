@@ -223,7 +223,10 @@ export class PaletteSessionDraft {
             this.closeSettings?.();
             closeMenusWithin(this.element);
           },
-          onInvalidate: () => this.connectMachine.close(),
+          onInvalidate: () => {
+            this.preferences.retirePresentation();
+            this.connectMachine.close();
+          },
           onRecoveryReady: (url, scope) => this.bindOwner(url, scope),
           onAccepted: (result) => this.accepted(result),
           retainRejectedPrompt: true,

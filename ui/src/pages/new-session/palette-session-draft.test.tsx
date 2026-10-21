@@ -743,8 +743,10 @@ describe("palette-only remembered settings", () => {
           ...expectDefined(fixture.context.gateway.snapshot.hello, "Gateway hello"),
         };
         fixture.publish();
-        await vi.waitFor(() => expect(fixture.remember().disabled).toBe(false));
-        expect(fixture.footer().getAttribute("aria-busy")).toBe("false");
+        await vi.waitFor(() => {
+          expect(fixture.remember().disabled).toBe(false);
+          expect(fixture.footer().getAttribute("aria-busy")).toBe("false");
+        });
         expect(
           fixture.host.querySelector('.palette-session-settings__error[role="alert"]'),
         ).not.toBeNull();
@@ -888,9 +890,7 @@ describe("palette-only remembered settings", () => {
       host.draft.open();
       await vi.waitFor(() => expect(footer().getAttribute("aria-busy")).toBe("false"));
       expect(select().value).toBe(deleting ? "main" : "other");
-      if (deleting) {
-        expect(host.draft.message).toBe("Keep this task");
-      }
+      expect(host.draft.message).toBe("");
     } finally {
       retry.release();
     }
