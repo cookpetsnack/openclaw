@@ -7,6 +7,7 @@ import {
 } from "../app/gateway-store.test-support.ts";
 import { createAgentIdentityCapability } from "../lib/agents/identity.ts";
 import type { ChatHistoryResponse } from "../pages/chat/chat-history-snapshot.ts";
+import { waitForFast } from "../test-helpers/wait-for.ts";
 import "./control-ui-session-summary.tsx";
 
 afterEach(async () => {
@@ -16,7 +17,7 @@ afterEach(async () => {
   vi.useRealTimers();
 });
 
-function setup(identity?: () => AgentIdentityResult) {
+function setup(identity?: () => AgentIdentityResult, waitFor = waitForFast) {
   const { gateway, current } = createGatewayStoreTestStore();
   onTestFinished(() => gateway.stop());
   gateway.start();
@@ -51,9 +52,9 @@ function setup(identity?: () => AgentIdentityResult) {
   document.body.append(element);
   const emit = (event: string, key = "agent:main:one", agentId = "main") =>
     current().testOptions.onEvent?.(createGatewayEvent(event, { sessionKey: key, agentId }));
-  const shown = (text: string) => vi.waitFor(() => expect(element.textContent).toContain(text));
+  const shown = (text: string) => waitFor(() => expect(element.textContent).toContain(text));
   const reply = async (index: number, text: string, data: ChatHistoryResponse = history(text)) => {
-    await vi.waitFor(() => expect(requests).toHaveLength(index + 1));
+    await waitFor(() => expect(requests).toHaveLength(index + 1));
     requests[index]!.resolve(data);
     await shown(text);
   };
@@ -88,7 +89,7 @@ it("refreshes visible message avatars from identity and stops hydrating while hi
     { id: "unused" },
   ];
   const avatarLoaded = () =>
-    vi.waitFor(() =>
+    waitForFast(() =>
       expect(element.querySelector("openclaw-agent-avatar img")?.getAttribute("src")).toBe(avatar),
     );
   await reply(0, "Agent response");
@@ -102,7 +103,7 @@ it("refreshes visible message avatars from identity and stops hydrating while hi
 
   const replacement = createAgentIdentityCapability(element.gateway!);
   element.agentIdentity = replacement;
-  await vi.waitFor(() => expect(replacement.get("main")?.avatar).toBe(avatar));
+  await waitForFast(() => expect(replacement.get("main")?.avatar).toBe(avatar));
   await avatarLoaded();
 
   element.presented = false;
@@ -127,7 +128,7 @@ it.each(["session", "agent", "connection", "gateway"] as const)(
     let nextRequests = requests;
     if (change === "gateway") {
       const replacement = setup();
-      await vi.waitFor(() => expect(replacement.requests).toHaveLength(1));
+      await waitForFast(() => expect(replacement.requests).toHaveLength(1));
       nextRequests = replacement.requests;
       element.gateway = replacement.element.gateway;
     } else if (change === "session") {
@@ -138,7 +139,7 @@ it.each(["session", "agent", "connection", "gateway"] as const)(
       current().testOptions.onClose?.({ code: 1006, reason: "socket lost", willRetry: true });
       current().testOptions.onHello?.(GATEWAY_STORE_TEST_HELLO);
     }
-    await vi.waitFor(() => expect(nextRequests).toHaveLength(2));
+    await waitForFast(() => expect(nextRequests).toHaveLength(2));
     expect(committedText.length).toBeGreaterThan(0);
     expect(committedText.every((text) => !text.includes("Previous owner transcript"))).toBe(true);
     observer.disconnect();
@@ -179,7 +180,7 @@ it("normalizes visible message text without reviving assistant commentary or too
 
 it("retains its successful history and cursor when retrying a failed refresh", async () => {
   useClock();
-  const { element, requests, emit, reply } = setup();
+  const { element, requests, emit, reply } = setup(undefined, vi.waitFor);
   await reply(0, "Retained reply", {
     ...history("Retained reply"),
     deltaCursor: "last-successful",
@@ -209,7 +210,7 @@ it("retains its successful history and cursor when retrying a failed refresh", a
 
 it("paces durable events and retains one catch-up during a pending load", async () => {
   useClock();
-  const { element, requests, emit, reply, settled } = setup();
+  const { element, requests, emit, reply, settled } = setup(undefined, vi.waitFor);
   await reply(0, "Initial reply");
 
   emit("session.message", "agent:other:one", "other");
@@ -245,7 +246,7 @@ it("paces durable events and retains one catch-up during a pending load", async 
 
 it("catches up with cursors, retains a bounded tail, and replaces it after a reset", async () => {
   useClock();
-  const { element, requests, emit, reply, shown } = setup();
+  const { element, requests, emit, reply, shown } = setup(undefined, vi.waitFor);
   const message = (seq: number) => ({
     role: "assistant",
     content: [textBlock(`Reply ${seq}.`)],
@@ -313,13 +314,13 @@ it("does not resume progress requests after removal with an update queued", asyn
   document.body.append(element);
   element.session = { ...element.session! };
   await element.updateComplete;
-  await vi.waitFor(() => expect(progressRequests()).toHaveLength(2));
+  await waitForFast(() => expect(progressRequests()).toHaveLength(2));
   await reply(1, "Reconnected reply");
 });
 
 it("rejects an old session response and reloads after reconnect without a parent render", async () => {
   const { element, requests, emit, current, reply, settled } = setup();
-  await vi.waitFor(() => expect(requests).toHaveLength(1));
+  await waitForFast(() => expect(requests).toHaveLength(1));
   element.session = { sessionKey: "agent:main:two", agentId: "main" };
   await reply(1, "Second session");
   requests[0]!.resolve(history("Stale first session"));
