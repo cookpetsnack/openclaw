@@ -147,14 +147,24 @@ for (const signal of ["SIGINT", "SIGTERM"] as const) {
   });
 }
 try {
-  let fixture: unknown;
+  const fixture: unknown = JSON.parse(
+    readFileSync(path.join(root, "team-shape-summary.json"), "utf8"),
+  );
+  if (
+    !isRecord(fixture) ||
+    fixture.format !== "openclaw-team-shape-v1" ||
+    typeof fixture.sessionCount !== "number" ||
+    !Number.isSafeInteger(fixture.sessionCount) ||
+    fixture.sessionCount < 1
+  ) {
+    throw new Error(
+      "--state-dir must contain a generated team-shape fixture with a positive session count; never use live state",
+    );
+  }
+  const sessionKeyCount = Math.min(999, fixture.sessionCount - 1);
+  const fixtureSessionKey = (index: number) =>
+    `agent:main:team-shape-session-${sessionKeyCount > 0 ? 1 + (index % sessionKeyCount) : 0}`;
   {
-    fixture = JSON.parse(readFileSync(path.join(root, "team-shape-summary.json"), "utf8"));
-    if (!isRecord(fixture) || fixture.format !== "openclaw-team-shape-v1") {
-      throw new Error(
-        "--state-dir must contain a generated team-shape fixture; never use live state",
-      );
-    }
     mkdirSync(output);
     const probe = createServer();
     await new Promise<void>((resolve, reject) => {
@@ -317,8 +327,7 @@ if (isMainThread) {
     await readGatewayCpuUsage(gateway);
     await delay(10_000);
   }
-  const fixtureAgentCount =
-    isRecord(fixture) && typeof fixture.agentCount === "number" ? fixture.agentCount : 1;
+  const fixtureAgentCount = typeof fixture.agentCount === "number" ? fixture.agentCount : 1;
   const variants: Array<{ name: string; params: SessionsListParams }> = [
     { name: "sidebar", params: { rowMode: "sidebar", source: "sidebar" } },
     { name: "general", params: { source: "sessions-page" } },
@@ -443,7 +452,7 @@ if (isMainThread) {
           round % Math.max(1, Math.ceil(mutationMs / Math.max(1, pollMs))) === 0
         ) {
           await rpc(clients[0]!, "sessions.patch", {
-            key: `agent:main:team-shape-session-${1 + (round % 999)}`,
+            key: fixtureSessionKey(round),
             label: `Synthetic prepared-row ${kind} ${round}`,
           });
           mutations++;
@@ -451,7 +460,7 @@ if (isMainThread) {
         await Promise.all(
           clients.map(async (client, index) => {
             const operation = operations[(round + index) % operations.length]!;
-            const key = `agent:main:team-shape-session-${1 + ((round * clientCount + index) % 999)}`;
+            const key = fixtureSessionKey(round * clientCount + index);
             const method =
               operation === "describe"
                 ? "sessions.describe"
@@ -586,7 +595,7 @@ if (isMainThread) {
               }
               mutationBusy = true;
               mutation = rpc(clients[0]!, "sessions.patch", {
-                key: `agent:main:team-shape-session-${1 + (mutations % 999)}`,
+                key: fixtureSessionKey(mutations),
                 label: `Synthetic ${variant.name} mutation ${mutations}`,
               })
                 .then(
