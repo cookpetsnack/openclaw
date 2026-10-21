@@ -2,11 +2,19 @@
 
 import { setImmediate as nextTurn } from "node:timers/promises";
 import { createRouter, definePage } from "@openclaw/uirouter";
+import { createComponent } from "solid-js";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { createDeferred } from "../../../../test/helpers/promise.js";
+import type { RouteId } from "../../app-route-paths.ts";
+import type { ApplicationContext } from "../../app/context.ts";
+import { RouterOutlet } from "../../app/router-outlet.tsx";
 import { createRuntimeConfigCapability } from "../../lib/config/runtime-config-capability.ts";
 import { setPluginEnabled } from "../../lib/plugins/index.ts";
+import { mountSolid } from "../../test-helpers/mount-solid.ts";
+import { createSolidApplicationContextProvider } from "../../test-helpers/solid-application-context.tsx";
 import { flush, waitForSolid } from "../../test-helpers/solid-settle.ts";
-import { mountConfigPage } from "./config-page.test-support.ts";
+import { completeConfigContext, mountConfigPage } from "./config-page.test-support.ts";
+import { ConfigPage } from "./config-page.tsx";
 import {
   mountMemoryPage,
   memoryTabRoute,
@@ -28,7 +36,9 @@ vi.mock("../../lib/plugins/index.ts", async (importOriginal) => {
 });
 
 describe("Memory plugin mutation ownership", () => {
-  beforeEach(() => vi.mocked(setPluginEnabled).mockReset());
+  beforeEach(() => {
+    vi.mocked(setPluginEnabled).mockReset();
+  });
 
   it("keeps a committed engine successful while making its failed refresh visible", async () => {
     const { element, runExternalMutation } = createMemoryPage({
@@ -227,56 +237,90 @@ describe("Memory plugin mutation ownership", () => {
     }
   });
 
-  it("leaves the settings tab while an add-on mutation is pending", async () => {
-    const pending = createMemoryTestDeferred<unknown>();
+  it("leaves Memory through RouterOutlet while an add-on mutation is pending", async () => {
+    const pending = createDeferred<unknown>();
     const { element, context, runExternalMutation } = createMemoryPage({
       configObject: {},
       catalog: [createMemoryTestAddon("active-memory", true)],
       setEnabled: () => pending.promise,
     });
-    const router = createRouter({
-      routes: [definePage({ id: "memory", path: "/settings/memory/:tab?", component: () => null })],
+    // The routed ConfigPage gates controls on the config capability.
+    Object.assign(context.runtimeConfig, { canSet: true });
+    const memoryModule = {
+      renderSolid: () =>
+        createComponent(ConfigPage, { pageId: "memory", routeData: element.routeData }),
+    };
+    const router = createRouter<RouteId, ApplicationContext, typeof memoryModule>({
+      routes: [
+        definePage({ id: "memory", path: "/settings/memory/:tab?", component: () => memoryModule }),
+        definePage({
+          id: "usage",
+          path: "/usage",
+          component: () => ({
+            renderSolid: () => {
+              const body = document.createElement("p");
+              body.textContent = "Memory destination: /usage";
+              return body;
+            },
+          }),
+        }),
+      ],
     });
     Object.assign(context, { router });
-    await router.navigate(
-      "memory",
-      context,
-      {},
+    const provider = createSolidApplicationContextProvider(completeConfigContext(context));
+    const page = mountSolid(
+      () => createComponent(RouterOutlet, { router, retryContext: context }),
       {
-        pathname: "/settings/memory/settings",
-        search: "",
-        hash: "",
+        wrapper: provider.wrapper,
       },
     );
-    const stop = router.subscribe(({ location }) => {
-      element.routeData = memoryTabRoute(
-        location.pathname.endsWith("/settings") ? "settings" : "overview",
-      );
-    });
-    mountMemoryPage(element);
+    let navigation: Promise<unknown> | undefined;
     try {
-      await waitForSolid(() => expect(addonSwitch(element, "Active memory")).not.toBeNull());
-      toggleAddon(element, "Active memory", false);
-      await waitForSolid(() => expect(runExternalMutation).toHaveBeenCalledOnce());
-      await waitForSolid(() => expect(setPluginEnabled).toHaveBeenCalledOnce());
       await router.navigate(
         "memory",
         context,
         {},
         {
-          pathname: "/settings/memory",
+          pathname: "/settings/memory/settings",
           search: "",
           hash: "",
         },
       );
       await waitForSolid(() =>
-        expect(element.querySelector('[data-settings-view="memory/overview"]')).not.toBeNull(),
+        expect(
+          addonSwitch(page.container, "Active memory"),
+          page.container.textContent ?? "",
+        ).not.toBeNull(),
       );
+      const oldHost = page.container.querySelector("openclaw-config-page")!;
+      toggleAddon(page.container, "Active memory", false);
+      await waitForSolid(() => expect(runExternalMutation).toHaveBeenCalledOnce());
+      await waitForSolid(() => expect(setPluginEnabled).toHaveBeenCalledOnce());
+      navigation = router.navigate("usage", context);
+      await waitForSolid(() => {
+        expect(page.container.textContent).toContain("Memory destination: /usage");
+        expect(oldHost.isConnected).toBe(false);
+        expect(page.container.querySelector("openclaw-config-page")).toBeNull();
+        expect(addonSwitch(page.container, "Active memory")).toBeNull();
+      });
+      await navigation;
+      pending.reject(new Error("Late Memory failure"));
+      await Promise.allSettled(runExternalMutation.mock.results.map(({ value }) => value));
+      await waitForSolid(() => {
+        expect(page.container.textContent).toContain("Memory destination: /usage");
+        expect(page.container.querySelector("openclaw-config-page")).toBeNull();
+        expect(page.container.querySelector('[role="alert"]')).toBeNull();
+        expect(page.container.textContent).not.toContain("Late Memory failure");
+      });
     } finally {
       pending.resolve(committed("active-memory", false));
-      await Promise.allSettled(runExternalMutation.mock.results.map(({ value }) => value));
-      stop();
-      element.remove();
+      await Promise.allSettled([
+        pending.promise,
+        navigation,
+        ...runExternalMutation.mock.results.map(({ value }) => value),
+      ]);
+      page.unmount();
+      router.stop();
     }
   });
 
