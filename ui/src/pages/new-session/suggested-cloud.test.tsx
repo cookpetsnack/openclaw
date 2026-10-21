@@ -178,9 +178,11 @@ it("presents held adoption, retains its error, and selects only the accepted ret
   await waitForSolid(() => {
     expect(result.place.cloudProfileId).toBe("cloud");
     expect(result.trigger().disabled).toBe(false);
-    expect(result.getByRole("alert").textContent).toBe("");
+    expect(result.getByRole("alert").textContent).toBe("Cloud login expired");
     expect(result.container.querySelector('[data-value="suggested-cloud"]')).toBeNull();
   });
+  result.flow.clearError("Cloud login expired");
+  await waitForSolid(() => expect(result.getByRole("alert").textContent).toBe(""));
   expect(result.request.mock.calls.some(([method]) => method === "sessions.dispatch")).toBe(false);
 });
 
