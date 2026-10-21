@@ -17,9 +17,50 @@ import {
   readSessionTranscriptSummary,
 } from "./suite-runtime-agent-session.ts";
 
+const owner = createQaGatewayChild();
+let provider: Awaited<ReturnType<typeof startAutomationProvider>>;
+let transport: Awaited<ReturnType<typeof createQaCrablineTransportAdapter>>;
+let gateway: QaGatewayChild;
+let fixtureArtifactDir: string;
+let stopping: Promise<void> | undefined;
+const stopAutomationFixture = () =>
+  (stopping ??= runQaGatewayFixture(
+    () =>
+      stopQaGatewayFixture(owner, {
+        preserveToDir: path.join(fixtureArtifactDir, "gateway"),
+      }),
+    () => transport?.cleanupAfterGatewayStop(),
+    () => provider?.stop(),
+  ));
+
 const suite = createControlUiE2eSuite({
   name: "Control UI cross-channel automation management with a real Gateway",
   startServerBeforeBrowser: true,
+  resources: {
+    retainedState: () => gateway?.tempRoot,
+    run: async (signal) => {
+      // Gateway and transport logs span both cases; screenshot directories stay per-case.
+      fixtureArtifactDir = suite.artifactDir;
+      signal.throwIfAborted();
+      provider = await startAutomationProvider();
+      signal.throwIfAborted();
+      transport = await createQaCrablineTransportAdapter({
+        outputDir: fixtureArtifactDir,
+        transportPolicy: { senderAllowlist: ["100001", "100002", "100003"] },
+        selection: {
+          channel: "telegram",
+          channelDriver: "crabline",
+          capabilityMatrixPath: "crabline-channel-driver-capabilities.json",
+          providerReadinessArtifactPath: "crabline-provider-readiness.json",
+        },
+      });
+      signal.throwIfAborted();
+      gateway = await startGateway(owner, provider.baseUrl, transport);
+      signal.throwIfAborted();
+      await transport.waitReady({ gateway });
+    },
+    close: stopAutomationFixture,
+  },
 });
 
 const captureUiProof = process.env.OPENCLAW_CAPTURE_UI_PROOF === "1";
@@ -78,7 +119,7 @@ function disabledJob(name: string, message: string) {
 function startGateway(
   owner: ReturnType<typeof createQaGatewayChild>,
   providerBaseUrl: string,
-  transport?: Awaited<ReturnType<typeof createQaCrablineTransportAdapter>>,
+  transport: Awaited<ReturnType<typeof createQaCrablineTransportAdapter>>,
 ) {
   const repoRoot = process.cwd();
   return owner.start({
@@ -100,11 +141,9 @@ function startGateway(
     controlUiEnabled: false,
     controlUiAllowedOrigins: [new URL(suite.server.baseUrl).origin],
     mutateConfig: (cfg) => {
-      if (transport) {
-        // Admission includes a non-owner; automation authority still belongs to configured owners.
-        cfg.commands = { ...cfg.commands, ownerAllowFrom: ["telegram:100001", "telegram:100002"] };
-        cfg.session = { ...cfg.session, dmScope: "per-channel-peer" };
-      }
+      // Admission includes a non-owner; automation authority still belongs to configured owners.
+      cfg.commands = { ...cfg.commands, ownerAllowFrom: ["telegram:100001", "telegram:100002"] };
+      cfg.session = { ...cfg.session, dmScope: "per-channel-peer" };
       cfg.plugins = { ...cfg.plugins, slots: { ...cfg.plugins?.slots, memory: "none" } };
       cfg.memory = { ...cfg.memory, search: { ...cfg.memory?.search, enabled: false } };
       cfg.tools = {
@@ -112,12 +151,12 @@ function startGateway(
         codeMode: false,
         toolSearch: false,
         // Ordinary full-access recovery retains non-replay-safe automations.
-        ...(!transport ? { exec: { mode: "full" as const } } : {}),
+        exec: { mode: "full" },
       };
       const entries = ((cfg.agents ??= {}).entries ??= {});
       entries.qa = {
         ...entries.qa,
-        identity: { name: transport ? "Automation proof" : "Recovery proof" },
+        identity: { name: "Automation proof" },
         tools: toolPolicy,
       };
       return cfg;
@@ -153,50 +192,36 @@ const writeVerdict = (file: string, value: unknown) =>
 
 const withAutomationGateway =
   (
-    channel: boolean,
     run: (
       gateway: QaGatewayChild,
       provider: Awaited<ReturnType<typeof startAutomationProvider>>,
-      transport?: Awaited<ReturnType<typeof createQaCrablineTransportAdapter>>,
+      transport: Awaited<ReturnType<typeof createQaCrablineTransportAdapter>>,
     ) => Promise<void>,
   ) =>
-  async () => {
-    const provider = await startAutomationProvider();
-    const owner = createQaGatewayChild();
-    let acquiredTransport: Awaited<ReturnType<typeof createQaCrablineTransportAdapter>> | undefined;
-    await runQaGatewayFixture(
-      async () => {
-        const transport = channel
-          ? await createQaCrablineTransportAdapter({
-              outputDir: suite.artifactDir,
-              transportPolicy: { senderAllowlist: ["100001", "100002", "100003"] },
-              selection: {
-                channel: "telegram",
-                channelDriver: "crabline",
-                capabilityMatrixPath: "crabline-channel-driver-capabilities.json",
-                providerReadinessArtifactPath: "crabline-provider-readiness.json",
-              },
-            })
-          : undefined;
-        acquiredTransport = transport;
-        const gateway = await startGateway(owner, provider.baseUrl, transport);
-        await transport?.waitReady({ gateway });
+  async (context: Parameters<typeof suite.runScenario>[0]) => {
+    let completed = false;
+    await suite.runScenario(context, {
+      run: async (signal) => {
+        signal.throwIfAborted();
+        if (stopping) {
+          throw new Error("Automation fixture was stopped by an earlier failed case");
+        }
         await run(gateway, provider, transport);
+        completed = true;
       },
-      () =>
-        stopQaGatewayFixture(owner, {
-          preserveToDir: path.join(suite.artifactDir, channel ? "gateway" : "recovery-gateway"),
-        }),
-      () => acquiredTransport?.cleanupAfterGatewayStop(),
-      () => provider.stop(),
-    );
+      close: async () => {
+        if (!completed || context.signal.aborted) {
+          await stopAutomationFixture();
+        }
+      },
+    });
   };
 
 suite.define(() => {
   it.skipIf(process.platform === "win32")(
     "an ordinary Control UI turn creates a disabled automation after its Gateway is replaced",
     { timeout: 240_000 },
-    withAutomationGateway(false, async (gateway, provider) => {
+    withAutomationGateway(async (gateway, provider) => {
       const marker = "recovered-create";
       const checkpoint = provider.holdInitialRequestForRestart(marker);
       const jobName = "Disabled restart recovery proof";
@@ -283,16 +308,19 @@ suite.define(() => {
           originalUserTurns: 1,
           automation: { name: created.name, enabled: created.enabled, persisted: true },
         });
+        await gateway.call("cron.remove", { id: String(created.id) });
       });
     }),
   );
   it(
     "configured owners and admin chat manage a Telegram-created job while a non-owner cannot",
     { timeout: 240_000 },
-    withAutomationGateway(true, async (gateway, provider, transport) => {
+    withAutomationGateway(async (gateway, provider, transport) => {
       if (!transport) {
         throw new Error("Telegram management proof requires its transport");
       }
+      await transport.waitReady({ gateway });
+      const managementLogMark = gateway.markLogs();
       const send = (senderId: string, marker: string, text: string) =>
         transport.sendInbound({
           accountId: transport.accountId,
@@ -368,7 +396,7 @@ suite.define(() => {
       };
       const managementAuditEvents = () =>
         gateway
-          .logs()
+          .readLogsSince(managementLogMark)
           .split("\n")
           .filter((line) => line.includes("cron: admin management"));
       expect(managementAuditEvents()).toHaveLength(0);
