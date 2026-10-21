@@ -243,7 +243,9 @@ describe("GitHub identity view", () => {
     identity.showPatFallback();
     flush();
     const input = view.getByLabelText("Fine-grained PAT");
-    if (!(input instanceof HTMLInputElement)) throw new Error("Expected PAT input");
+    if (!(input instanceof HTMLInputElement)) {
+      throw new Error("Expected PAT input");
+    }
     input.value = "synthetic-navigation-token";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     flush();
