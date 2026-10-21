@@ -242,7 +242,9 @@ it.each([
     attachmentRuntime: runtime,
     attachmentChat: createComposerProps({
       getAttachments: () => attachments,
-      onAttachmentsChange: (next) => attachments.splice(0, attachments.length, ...next),
+      onAttachmentsChange: (next) => {
+        attachments.splice(0, attachments.length, ...next);
+      },
       onPendingReadsChange: (delta) => {
         balance += delta;
       },

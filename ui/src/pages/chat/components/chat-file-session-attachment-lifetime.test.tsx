@@ -1,28 +1,33 @@
 /* @vitest-environment jsdom */
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { createDeferredCore } from "../../../../../src/shared/deferred.ts";
+import type { SessionFileDownload } from "../../../api/session-file-download.ts";
 import type { ChatAttachment } from "../../../lib/chat/chat-types.ts";
 import { waitForSolid } from "../../../test-helpers/solid-settle.ts";
 import { createComposerProps, resetComposerFixture } from "../chat-composer.test-support.ts";
-import type { FileReaderDownload } from "./chat-sidebar-content-types.ts";
 import { createChatSidebarContainer } from "./chat-sidebar.test-support.ts";
 import "./chat-detail-panel.tsx";
 
 afterEach(async () => {
   document.body.replaceChildren();
   await resetComposerFixture();
+  vi.unstubAllGlobals();
 });
 
 it.each(["content", "destination"] as const)(
   "the native detail bridge retires a held transfer before %s publication",
   async (change) => {
-    const held = createDeferredCore<FileReaderDownload | null>();
+    const held = createDeferredCore<SessionFileDownload | null>();
+    const fetcher = vi.fn(async () => new Response("Retired bytes"));
+    vi.stubGlobal("fetch", fetcher);
     const attachments: ChatAttachment[] = [];
     let balance = 0;
     let signal: AbortSignal | undefined;
     const chat = createComposerProps({
       getAttachments: () => attachments,
-      onAttachmentsChange: (next) => attachments.splice(0, attachments.length, ...next),
+      onAttachmentsChange: (next) => {
+        attachments.splice(0, attachments.length, ...next);
+      },
       onPendingReadsChange: (delta) => {
         balance += delta;
       },
@@ -68,9 +73,13 @@ it.each(["content", "destination"] as const)(
     expect(signal?.aborted).toBe(true);
     expect(balance).toBe(0);
     await panel.updateComplete;
-    held.resolve({ filename: "notes.md", blob: new Blob(["Retired bytes"]) });
+    held.resolve({
+      filename: "notes.md",
+      url: "/api/artifacts/download/synthetic-notes/synthetic-ticket",
+    });
     await held.promise;
     await Promise.resolve();
+    expect(fetcher).not.toHaveBeenCalled();
     expect(attachments).toEqual([]);
     expect(balance).toBe(0);
   },
