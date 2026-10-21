@@ -14,7 +14,10 @@ import type {
 import { defineSingleProviderPluginEntry } from "openclaw/plugin-sdk/provider-entry";
 import { buildProviderReplayFamilyHooks } from "openclaw/plugin-sdk/provider-model-shared";
 import { buildProviderStreamFamilyHooks } from "openclaw/plugin-sdk/provider-stream-family";
-import { wrapProviderPayloadHook } from "openclaw/plugin-sdk/provider-stream-shared";
+import {
+  createOpenAIHostedWebSearchWrapper,
+  wrapProviderPayloadHook,
+} from "openclaw/plugin-sdk/provider-stream-shared";
 import {
   buildProviderToolCompatFamilyHooks,
   findUnsupportedSchemaKeywords,
@@ -45,6 +48,7 @@ import {
 import {
   resolveClawRouterServiceTiers,
   resolveFastModeSupport,
+  resolveNativeWebSearch,
   resolveServiceTiers,
 } from "./provider-policy-api.js";
 import { fetchClawRouterUsage } from "./usage.js";
@@ -150,7 +154,7 @@ function wrapClawRouterProviderStream(ctx: ProviderWrapStreamFnContext): StreamF
   if (!underlying) {
     return undefined;
   }
-  return (model, context, options) => {
+  const routedStream: StreamFn = (model, context, options) => {
     const apiKey = options?.apiKey?.trim();
     const dispatchKey = apiKey && apiKey !== ENV_API_KEY_MARKER ? apiKey : undefined;
     const preparedModel = prepareClawRouterRequestModel(model);
@@ -216,6 +220,20 @@ function wrapClawRouterProviderStream(ctx: ProviderWrapStreamFnContext): StreamF
       : underlying;
     return stream({ ...preparedModel, headers }, context, options);
   };
+  // Evaluate catalog facts before dispatch removes private route metadata.
+  return createOpenAIHostedWebSearchWrapper(
+    routedStream,
+    ({ model }) =>
+      ctx.nativeWebSearchAllowedByToolPolicy !== false &&
+      resolveNativeWebSearch({
+        config: ctx.config,
+        provider: model.provider,
+        modelId: model.id,
+        api: model.api,
+        baseUrl: model.baseUrl,
+        modelParams: model.params,
+      }),
+  );
 }
 
 // JSON Schema allows `type` to be an array; a union containing "object" still
@@ -586,6 +604,7 @@ export default defineSingleProviderPluginEntry({
       normalizeResolvedModel: ({ model }) => normalizeClawRouterResolvedModel(model),
       resolveFastModeSupport,
       resolveServiceTiers,
+      resolveNativeWebSearch,
       wrapSimpleCompletionStreamFn: wrapClawRouterProviderStream,
       wrapStreamFn: wrapClawRouterProviderStream,
       buildReplayPolicy: (ctx) => {

@@ -5,6 +5,7 @@ import {
   readStringValue,
 } from "@openclaw/normalization-core/string-coerce";
 import type { ResponseOutputItem } from "openai/resources/responses/responses.js";
+import { renderResponsesMessageText } from "../providers/openai-responses-message-text.js";
 import {
   AZURE_RESPONSES_TEXT_CONTENT_PART_TYPE,
   OPENAI_RESPONSES_OUTPUT_TEXT_CONTENT_PART_TYPE,
@@ -413,6 +414,13 @@ export async function processResponsesStream<TApi extends Api>(
         ) {
           slot.item.content.push(event.part);
         }
+      } else if (event.type === "response.output_text.annotation.added") {
+        const slot = outputSlots.resolve(event, "text");
+        const part = slot?.item.content?.[event.content_index];
+        if (part?.type === "output_text" && event.annotation !== null) {
+          part.annotations ??= [];
+          part.annotations.push(event.annotation);
+        }
       } else if (
         event.type === "response.output_text.delta" ||
         isAzureResponsesTextDeltaEvent(event) ||
@@ -537,12 +545,10 @@ export async function processResponsesStream<TApi extends Api>(
         ) {
           // Support both OpenAI "output_text" and Azure "text" content types
           const streamedText = outputSlot.pendingText ?? outputSlot.block?.text ?? "";
-          const finalText =
-            item.content == null
-              ? streamedText
-              : item.content
-                  .map((c) => (c.type === "output_text" || c.type === "text" ? c.text : c.refusal))
-                  .join("");
+          const rendered = renderResponsesMessageText(
+            item.content ?? outputSlot.item.content ?? [{ type: "text", text: streamedText }],
+          );
+          const finalText = rendered.text;
           const phase = item.phase ?? undefined;
           const collapse =
             outputSlot.pendingText !== null
@@ -573,6 +579,7 @@ export async function processResponsesStream<TApi extends Api>(
               partial: output,
             });
             lastTextBlock = outputSlot.collapseCandidate;
+            terminal.recordCompletedText(outputSlot.collapseCandidate.index, rendered);
             outputs.set(
               item,
               outputSlot.collapseCandidate.index,
@@ -599,6 +606,7 @@ export async function processResponsesStream<TApi extends Api>(
               throw new Error("Responses stream finalized text without a content index");
             }
             lastTextBlock = { block: outputSlot.block, index: contentIndex, phase };
+            terminal.recordCompletedText(contentIndex, rendered);
             outputs.set(
               item,
               contentIndex,

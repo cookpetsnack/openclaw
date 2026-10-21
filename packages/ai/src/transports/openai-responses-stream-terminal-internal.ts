@@ -5,6 +5,10 @@ import type {
   ResponseStreamEvent,
 } from "openai/resources/responses/responses.js";
 import { calculateCost } from "../model-utils.js";
+import {
+  renderResponsesMessageText,
+  type ResponsesMessageText,
+} from "../providers/openai-responses-message-text.js";
 import { resolveResponsesMessageSnapshotCollapse } from "../providers/openai-responses-stream-compat.js";
 import {
   mapResponsesTerminalUsage,
@@ -126,6 +130,10 @@ export function createResponsesTerminalController(params: {
   const { output, stream, model, options } = params;
   const blocks = output.content;
   const pendingReasoning = new Set<number>();
+  const completedText = new Map<number, ResponsesMessageText>();
+  const recordCompletedText = (index: number, text: ResponsesMessageText) => {
+    completedText.set(index, text);
+  };
   const deferredToolCompletions: Extract<AssistantMessageEvent, { type: "toolcall_end" }>[] = [];
   const recordPendingReasoning = (contentIndex: number) => {
     pendingReasoning.add(contentIndex);
@@ -167,16 +175,13 @@ export function createResponsesTerminalController(params: {
       }
     }
   };
-  const appendText = (item: ResponseOutputMessage, initialIndex?: number): number | undefined => {
+  const appendText = (
+    item: ResponseOutputMessage,
+    initialIndex?: number,
+    rendered = renderResponsesMessageText(item.content ?? []),
+  ): number | undefined => {
     let contentIndex = initialIndex;
-    const text = (Array.isArray(item.content) ? item.content : [])
-      .map((part) => {
-        const content = part as { type: string; text?: string; refusal?: string };
-        return content.type === "output_text" || content.type === "text"
-          ? (content.text ?? "")
-          : (content.refusal ?? "");
-      })
-      .join("");
+    const text = rendered.text;
     const block = contentIndex === undefined ? undefined : blocks[contentIndex];
     const started = block?.type === "text" ? block : undefined;
     if (!text && !started) {
@@ -217,6 +222,7 @@ export function createResponsesTerminalController(params: {
         stream.push({ type: "text_start", contentIndex, partial: output });
       }
     }
+    recordCompletedText(contentIndex, rendered);
     stream.push({ type: "text_end", contentIndex, content: text, partial: output });
     return contentIndex;
   };
@@ -287,6 +293,14 @@ export function createResponsesTerminalController(params: {
       if (item.type === "message") {
         const tracked = params.outputs.get(item, terminalIndex);
         if (tracked?.completed) {
+          const block = blocks[tracked.contentIndex];
+          const previous = completedText.get(tracked.contentIndex);
+          if (block?.type === "text" && previous) {
+            const rendered = renderResponsesMessageText(item.content ?? [], previous);
+            if (rendered.text !== block.text) {
+              appendText(item, tracked.contentIndex, rendered);
+            }
+          }
           continue;
         }
         const appendedIndex = appendText(item, tracked?.contentIndex);
@@ -442,6 +456,7 @@ export function createResponsesTerminalController(params: {
     finalizeFailedResponse: finalizeTerminalFacts,
     recordIncompleteToolCall,
     recoverTerminalOutput,
+    recordCompletedText,
     emitToolCallCompletion,
     recordPendingReasoning,
     releaseDeferredToolCompletions,

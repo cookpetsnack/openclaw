@@ -271,6 +271,40 @@ export function createPayloadPatchStreamWrapper(
   };
 }
 
+/** OpenAI Responses hosted-search wire policy shared by native and admitted proxy routes. */
+export function createOpenAIHostedWebSearchWrapper(
+  baseStreamFn: StreamFn | undefined,
+  shouldPatch: NonNullable<
+    NonNullable<Parameters<typeof createPayloadPatchStreamWrapper>[2]>["shouldPatch"]
+  >,
+): StreamFn {
+  return createPayloadPatchStreamWrapper(
+    baseStreamFn,
+    ({ payload, options }) => {
+      (
+        options as { openclawCodeModeAllowedHostedToolTypes?: Set<string> } | undefined
+      )?.openclawCodeModeAllowedHostedToolTypes?.add("web_search");
+      const existingTools = Array.isArray(payload.tools) ? payload.tools : [];
+      const filteredTools = existingTools.filter((tool) => {
+        const record = asOptionalObjectRecord(tool);
+        return record?.type !== "function" || record.name !== "web_search";
+      });
+      if (filteredTools.some((tool) => asOptionalObjectRecord(tool)?.type === "web_search")) {
+        if (filteredTools.length !== existingTools.length) {
+          payload.tools = filteredTools;
+        }
+      } else {
+        payload.tools = [...filteredTools, { type: "web_search" }];
+      }
+      const reasoning = asOptionalObjectRecord(payload.reasoning);
+      if (reasoning?.effort === "minimal") {
+        reasoning.effort = "low";
+      }
+    },
+    { shouldPatch },
+  );
+}
+
 /**
  * Applies explicit disabled-thinking intent to OpenAI-compatible Chat
  * Completions payloads without changing enabled reasoning levels.
