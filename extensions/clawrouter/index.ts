@@ -36,6 +36,8 @@ import {
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { containsAsciiControlCharacter } from "openclaw/plugin-sdk/string-normalization-runtime";
 import { buildClawRouterDecisionProvider } from "./decision-provider.js";
+import { buildClawRouterImageGenerationProvider } from "./image-generation-provider.js";
+import { listClawRouterImageModelCatalog } from "./image-model-catalog.js";
 import manifest from "./openclaw.plugin.json" with { type: "json" };
 import { parseClawRouterPool, type ClawRouterPoolResult } from "./pool.js";
 import {
@@ -427,6 +429,12 @@ export default defineSingleProviderPluginEntry({
   register(api) {
     api.registerSpeechProvider(buildClawRouterSpeechProvider);
     api.registerDecisionProvider(buildClawRouterDecisionProvider());
+    api.registerImageGenerationProvider(buildClawRouterImageGenerationProvider());
+    api.registerModelCatalogProvider({
+      provider: "clawrouter",
+      kinds: ["image_generation"],
+      liveCatalog: listClawRouterImageModelCatalog,
+    });
     api.registerGatewayMethod(
       "clawrouter.pool.get",
       async (request) => {

@@ -15,6 +15,7 @@
     "clawrouter"
   ],
   "contracts": {
+    "imageGenerationProviders": ["clawrouter"],
     "speechProviders": ["clawrouter"],
     "usageProviders": [
       "clawrouter"
@@ -22,6 +23,9 @@
     "decisionProviders": [
       "clawrouter"
     ]
+  },
+  "imageGenerationProviderMetadata": {
+    "clawrouter": { "authSignals": [{ "provider": "clawrouter" }] }
   },
   "setup": {
     "providers": [
