@@ -56,14 +56,18 @@ it("leaves the avatar route before its admitted generation settles", async () =>
     );
   });
   try {
-    mounted.getByRole("button", { name: "Generate", exact: true }).click();
+    mounted.getByRole("button", { name: /^Generate$/ }).click();
     const prompt = await waitForSolid(() => mounted.getByRole<HTMLTextAreaElement>("textbox"));
     prompt.value = "A patient gardener";
     prompt.dispatchEvent(new Event("input", { bubbles: true }));
     await waitForSolid(() =>
-      expect(mounted.getAllByRole("button", { name: "Generate", exact: true })).toHaveLength(2),
+      expect(mounted.getAllByRole("button", { name: /^Generate$/ })).toHaveLength(2),
     );
-    mounted.getAllByRole("button", { name: "Generate", exact: true })[1].click();
+    const generateButton = mounted.getAllByRole("button", { name: /^Generate$/ })[1];
+    if (!generateButton) {
+      throw new Error("Avatar generation button is missing");
+    }
+    generateButton.click();
     await waitForSolid(() => expect(request).toHaveBeenCalledOnce());
     expect(request).toHaveBeenCalledWith(
       "agents.avatar.generate",
