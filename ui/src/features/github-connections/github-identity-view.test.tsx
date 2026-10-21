@@ -1,7 +1,10 @@
-import { createSignal, Show } from "solid-js";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createRouter, definePage } from "@openclaw/uirouter";
+import { getQueriesForElement } from "@solidjs/testing-library";
+import { createSignal } from "solid-js";
+import { afterEach, beforeEach, describe, expect, it, onTestFinished, vi } from "vitest";
 import { createDeferred } from "../../../../test/helpers/promise.ts";
 import type { GatewayBrowserClient } from "../../api/gateway.ts";
+import { mountRouterOutlet, settleRouterOutlet } from "../../app/router-outlet.test-support.tsx";
 import { createGitHubIdentityView } from "../../lib/reactive/domain-github-identity.ts";
 import { createTestGatewayClient } from "../../test-helpers/gateway-client.ts";
 import { mountSolid } from "../../test-helpers/mount-solid.ts";
@@ -215,20 +218,44 @@ describe("GitHub identity view", () => {
     );
     const client = createTestGatewayClient(request);
     let identity!: ReturnType<typeof createGitHubIdentityView>;
-    const view = mountSolid(() => {
-      const [panel, setPanel] = createSignal("github");
-      identity = createGitHubIdentityView({
-        runExternalMutation: createMutationRunner(client),
-      });
-      return (
-        <>
-          <button onClick={() => setPanel("destination")}>Open destination</button>
-          <Show when={panel() === "github"} fallback={<h1>Destination panel</h1>}>
-            <GitHubIdentity identity={identity} onOpenConnections={vi.fn()} />
-          </Show>
-        </>
-      );
+    const router = createRouter({
+      routes: [
+        definePage({
+          id: "github",
+          path: "/github",
+          component: () => ({
+            renderSolid: () => {
+              identity = createGitHubIdentityView({
+                runExternalMutation: createMutationRunner(client),
+              });
+              return <GitHubIdentity identity={identity} onOpenConnections={vi.fn()} />;
+            },
+          }),
+        }),
+        definePage({
+          id: "destination",
+          path: "/destination",
+          component: () => ({
+            renderSolid: () => (
+              <section aria-label="Destination body">The replacement route is ready.</section>
+            ),
+          }),
+        }),
+      ],
     });
+    const view = mountSolid(() => (
+      <button onClick={() => void router.navigate("destination", {})}>Open destination</button>
+    ));
+    const outlet = mountRouterOutlet({ router });
+    const routed = getQueriesForElement(outlet);
+    onTestFinished(() => {
+      stored.resolve({ ok: true });
+      outlet.dispose();
+      view.unmount();
+      router.stop();
+    });
+    await router.navigate("github", {});
+    await settleRouterOutlet(outlet);
     flush();
     identity.sync({
       client,
@@ -242,26 +269,39 @@ describe("GitHub identity view", () => {
     });
     identity.showPatFallback();
     flush();
-    const input = view.getByLabelText("Fine-grained PAT");
+    const input = routed.getByLabelText("Fine-grained PAT");
     if (!(input instanceof HTMLInputElement)) {
       throw new Error("Expected PAT input");
     }
     input.value = "synthetic-navigation-token";
     input.dispatchEvent(new Event("input", { bubbles: true }));
     flush();
-    view.getByRole("button", { name: "Save Identity" }).click();
+    routed.getByRole("button", { name: "Save Identity" }).click();
     flush();
+    let destination: HTMLElement | undefined;
     try {
-      expect(view.getByRole("button", { name: "Saving…" })).toHaveProperty("disabled", true);
+      expect(routed.getByRole("button", { name: "Saving…" })).toHaveProperty("disabled", true);
       view.getByRole("button", { name: "Open destination" }).click();
+      await vi.advanceTimersByTimeAsync(0);
       flush();
-      expect(view.getByRole("heading", { name: "Destination panel" })).toBeTruthy();
+      destination = routed.getByRole("region", { name: "Destination body" });
+      expect(destination.textContent).toBe("The replacement route is ready.");
+      expect(outlet.querySelector("openclaw-github-identity")).toBeNull();
+      expect(routed.queryByLabelText("Fine-grained PAT")).toBeNull();
+      expect(routed.queryByRole("button", { name: "Saving…" })).toBeNull();
       expect(request.mock.calls.map(([method]) => method)).toEqual(["secrets.store.set"]);
     } finally {
       stored.resolve({ ok: true });
       await vi.advanceTimersByTimeAsync(0);
     }
-    expect(request).toHaveBeenCalledWith("tools.github.configure", expect.anything());
+    expect(request.mock.calls.map(([method]) => method)).toEqual([
+      "secrets.store.set",
+      "secrets.store.delete",
+    ]);
+    expect(identity.read().status).toBeNull();
+    expect(routed.getByRole("region", { name: "Destination body" })).toBe(destination);
+    expect(outlet.querySelector("openclaw-github-identity")).toBeNull();
+    expect(routed.queryByLabelText("Fine-grained PAT")).toBeNull();
   });
 
   it("retires pending authorization-code copying only when its payload changes", async () => {
