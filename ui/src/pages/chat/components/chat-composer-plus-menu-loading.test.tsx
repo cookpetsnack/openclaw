@@ -49,14 +49,19 @@ it.each(["keyboard", "last", "pointer", "external", "closed", "reopened"] as con
   "keeps the trigger and respects %s focus while menu content loads",
   async (mode) => {
     const ready = createDeferred();
+    const importStarted = createDeferred();
+    const importFinished = createDeferred();
     onTestFinished(() => ready.resolve());
     let loads = 0;
     vi.doMock("./chat-composer-plus-menu-content.tsx", async () => {
       loads++;
+      importStarted.resolve();
       await ready.promise;
-      return vi.importActual<typeof import("./chat-composer-plus-menu-content.tsx")>(
+      const content = await vi.importActual<typeof import("./chat-composer-plus-menu-content.tsx")>(
         "./chat-composer-plus-menu-content.tsx",
       );
+      importFinished.resolve();
+      return content;
     });
     const view = mountMenu();
     view.trigger.focus();
@@ -71,6 +76,7 @@ it.each(["keyboard", "last", "pointer", "external", "closed", "reopened"] as con
         }),
       );
     }
+    await importStarted.promise;
     await waitForSolid(() => {
       expect(view.panel.matches(":popover-open")).toBe(true);
       expect(loads).toBe(1);
@@ -104,6 +110,7 @@ it.each(["keyboard", "last", "pointer", "external", "closed", "reopened"] as con
       }
     }
     ready.resolve();
+    await importFinished.promise;
     await waitForSolid(() =>
       expect(
         view.getByRole("menuitemcheckbox", { name: "Updated toggle", hidden: true }),
