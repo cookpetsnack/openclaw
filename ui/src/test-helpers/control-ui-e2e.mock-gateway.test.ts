@@ -1,7 +1,7 @@
 /* @vitest-environment jsdom */
 import { expectDefined } from "@openclaw/normalization-core";
 import { Compile } from "typebox/compile";
-import { expect, vi } from "vitest";
+import { expect, vi, type TestAPI } from "vitest";
 import { ChannelsPairingListResultSchema } from "../../../packages/gateway-protocol/src/schema/channel-pairing.ts";
 import { ChannelsStatusResultSchema } from "../../../packages/gateway-protocol/src/schema/channels.ts";
 import { MigrationProtocolSchemas } from "../../../packages/gateway-protocol/src/schema/migrations.ts";
@@ -14,6 +14,7 @@ import type { MockGatewayWindow } from "./control-ui-e2e-contract.ts";
 import {
   createControlUiMockGatewayInitScript,
   type ControlUiMockRequestHandler,
+  type ControlUiMockGatewayScenario,
 } from "./control-ui-e2e.ts";
 import { flushMockTimers, mockGatewayTest as it } from "./mock-gateway-page.test-support.ts";
 
@@ -23,9 +24,7 @@ const getGateway = (window: MockGatewayWindow) =>
 it("serves protocol-valid empty Custodian history without method advertisement", async ({
   gatewayPage,
 }) => {
-  gatewayPage.execute(createControlUiMockGatewayInitScript({ featureMethods: ["openclaw.chat"] }));
-  const { request } = gatewayPage.connect();
-  await flushMockTimers();
+  const { request } = await connect(gatewayPage, { featureMethods: ["openclaw.chat"] });
 
   const history = await request("custodian-history", "openclaw.chat.history", {});
 
@@ -34,9 +33,7 @@ it("serves protocol-valid empty Custodian history without method advertisement",
 });
 
 it("serves protocol-valid empty channel status and pairing defaults", async ({ gatewayPage }) => {
-  gatewayPage.execute(createControlUiMockGatewayInitScript());
-  const { request } = gatewayPage.connect();
-  await flushMockTimers();
+  const { request } = await connect(gatewayPage);
 
   const snapshot = await request("channel-status", "channels.status", { probe: false });
 
@@ -49,9 +46,7 @@ it("serves protocol-valid empty channel status and pairing defaults", async ({ g
 });
 
 it("serves protocol-valid empty plugin discovery defaults", async ({ gatewayPage }) => {
-  gatewayPage.execute(createControlUiMockGatewayInitScript());
-  const { request } = gatewayPage.connect();
-  await flushMockTimers();
+  const { request } = await connect(gatewayPage);
 
   const categories = await request("plugin-categories", "plugins.catalog.categories", {});
   expect(Compile(PluginsCatalogCategoriesResultSchema).Check(categories)).toBe(true);
@@ -63,9 +58,7 @@ it("serves protocol-valid empty plugin discovery defaults", async ({ gatewayPage
 });
 
 it("serves protocol-valid empty memory plans for the requested agent", async ({ gatewayPage }) => {
-  gatewayPage.execute(createControlUiMockGatewayInitScript());
-  const { request } = gatewayPage.connect();
-  await flushMockTimers();
+  const { request } = await connect(gatewayPage);
   const validate = Compile(MigrationProtocolSchemas.MigrationsMemoryPlanResult);
 
   for (const agentId of ["main", "research"]) {
@@ -399,4 +392,194 @@ it("keeps repeated events scoped after unsubscribe and reconnect without filteri
     gatewayPage.close();
     vi.useRealTimers();
   }
+});
+
+const ids = (items: readonly { id?: string }[]) => items.map(({ id }) => id);
+function expectReply(frames: readonly unknown[], id: string, payload?: unknown) {
+  const result = { id, ok: true };
+  expect(frames.at(-1)).toMatchObject(payload === undefined ? result : { ...result, payload });
+}
+
+it.for(["resolve", "reject"] as const)(
+  "%ss every held request without changing one-shot deferrals",
+  async (outcome, { gatewayPage }) => {
+    const { window, execute, responses: frames } = gatewayPage;
+    const catalog = { environments: [], profiles: [{ id: "aws" }] };
+    const scenario = {
+      heldMethods: ["environments.list"],
+      deferredMethods: ["models.list"],
+      methodResponses: { "environments.list": catalog },
+    };
+    execute(createControlUiMockGatewayInitScript(scenario));
+    const sockets = [
+      gatewayPage.connect("ws://mock-gateway/first"),
+      gatewayPage.connect("ws://mock-gateway/second"),
+    ] as const;
+    const gateway = getGateway(window);
+    await flushMockTimers();
+    sockets[0].send("catalog-first", "environments.list");
+    sockets[1].send("catalog-replacement", "environments.list");
+    sockets[0].send("model-held", "models.list");
+    sockets[0].send("model-next", "models.list");
+    await flushMockTimers();
+    expect(ids(frames)).toEqual(["model-next"]);
+
+    if (outcome === "resolve") {
+      gateway.resolveDeferred("environments.list");
+    } else {
+      gateway.rejectDeferred("environments.list", { message: "catalog unavailable" });
+    }
+    const released =
+      outcome === "resolve"
+        ? { ok: true, payload: catalog }
+        : { ok: false, error: expect.objectContaining({ message: "catalog unavailable" }) };
+    expect(frames.slice(1)).toEqual(
+      ["catalog-first", "catalog-replacement"].map((id) =>
+        expect.objectContaining({ id, ...released }),
+      ),
+    );
+    sockets[1].send("catalog-after-release", "environments.list");
+    await flushMockTimers();
+    expectReply(frames, "catalog-after-release", catalog);
+    gateway.resolveDeferred("models.list");
+    expectReply(frames, "model-held");
+
+    gateway.deferNext("environments.list");
+    sockets[0].send("catalog-one-shot", "environments.list");
+    sockets[0].send("catalog-unblocked", "environments.list");
+    await flushMockTimers();
+    expectReply(frames, "catalog-unblocked");
+    expect(frames.some((frame) => frame.id === "catalog-one-shot")).toBe(false);
+    gateway.resolveDeferred("environments.list");
+    expectReply(frames, "catalog-one-shot");
+  },
+);
+
+it("keeps roster deferrals separate from child queries", async ({ gatewayPage }) => {
+  const { window, execute, responses: frames } = gatewayPage;
+  execute(createControlUiMockGatewayInitScript());
+  const gateway = getGateway(window);
+  const { send } = gatewayPage.connect("ws://mock-gateway/roster");
+  await flushMockTimers();
+
+  const rosterMatch = { includeGlobal: true };
+  const childQuery = { includeGlobal: false, spawnedBy: "agent:main:parent" };
+  expect(gateway.deferNext("sessions.list", rosterMatch)).toBe(0);
+  send("child-before", "sessions.list", childQuery);
+  send("roster-held", "sessions.list", rosterMatch);
+  send("child-after", "sessions.list", childQuery);
+  send("health", "health", {});
+  await flushMockTimers();
+
+  expect(ids(frames)).toEqual(["child-before", "child-after", "health"]);
+  expect(ids(gateway.findRequests("sessions.list", rosterMatch))).toEqual(["roster-held"]);
+  expect(ids(gateway.findRequests("sessions.list"))).toEqual([
+    "child-before",
+    "roster-held",
+    "child-after",
+  ]);
+  expect(gateway.findRequests()).toHaveLength(4);
+
+  gateway.resolveDeferred("sessions.list");
+  expectReply(frames, "roster-held");
+  send("roster-next", "sessions.list", rosterMatch);
+  await flushMockTimers();
+  expectReply(frames, "roster-next");
+  const rosterRequests = gateway.findRequests("sessions.list", rosterMatch);
+  expect(ids(rosterRequests)).toEqual(["roster-held", "roster-next"]);
+  expect(gateway.deferNext("sessions.list", rosterMatch)).toBe(rosterRequests.length);
+});
+
+type GatewayPage = typeof it extends TestAPI<{ gatewayPage: infer Page }> ? Page : never;
+const sessionKey = "agent:main:main";
+const input = (id: string) => ({ sessionKey, message: id, idempotencyKey: id });
+async function connect(page: GatewayPage, scenario: ControlUiMockGatewayScenario = {}) {
+  page.execute(createControlUiMockGatewayInitScript(scenario));
+  const socket = page.connect();
+  await flushMockTimers();
+  const gateway = getGateway(page.window);
+  const readHistory = (id: string, inputRunIds?: string[], key = sessionKey) =>
+    socket.request(id, "chat.history", { sessionKey: key, inputRunIds });
+  return { ...socket, gateway, readHistory };
+}
+
+it.for([false, true])(
+  "commits input before execution (%s)",
+  async (attachment, { gatewayPage }) => {
+    const { request, frames, readHistory } = await connect(gatewayPage, {
+      historyMessages: [
+        { role: "assistant", content: "Ready", __openclaw: { id: "ready", seq: 4 } },
+      ],
+    });
+    const file = { type: "file", fileName: "a.txt", mimeType: "text/plain", content: "aA==" };
+    const media = {
+      fileName: "a.txt",
+      contentType: "text/plain",
+      url: "data:text/plain;base64,aA==",
+    };
+    const params = {
+      ...input("source-run"),
+      ...(attachment ? { attachments: [file] } : {}),
+    };
+    const ack = await request("send", "chat.send", params);
+    const history = await readHistory("history", ["source-run", "unknown"]);
+    expect(history.messages).toEqual([
+      expect.objectContaining({ role: "assistant", content: "Ready" }),
+      expect.objectContaining({
+        role: "user",
+        content: params.message,
+        idempotencyKey: "source-run:user",
+        __openclaw: expect.objectContaining({
+          id: "mock-user:source-run",
+          seq: 5,
+          ...(attachment ? { media: [expect.objectContaining(media)] } : {}),
+        }),
+      }),
+    ]);
+    expect(history.inputReceipts).toEqual([
+      { runId: "source-run", state: "consumed", consumedByEventId: "mock-user:source-run" },
+    ]);
+    expect(ack.status).toBe("started");
+    if (attachment) {
+      expect(ack).not.toHaveProperty("messageSeq");
+      const event = frames.findIndex(
+        (frame) => frame.type === "event" && frame.event === "session.message",
+      );
+      expect(event).toBeGreaterThan(frames.findIndex((frame) => frame.id === "send"));
+    } else {
+      expect(ack.messageSeq).toBe(5);
+    }
+    await request("retry", "chat.send", params);
+    expect((await readHistory("again")).messages).toEqual(history.messages);
+    const other = await readHistory("other", ["source-run"], "agent:main:other");
+    expect(other.inputReceipts).toEqual([]);
+    expect(other.messages).toHaveLength(1);
+  },
+);
+
+it("does not consume held, resolved or raw terminal input", async ({ gatewayPage }) => {
+  const { gateway, send, readHistory } = await connect(gatewayPage, {
+    deferredMethods: ["chat.send"],
+  });
+  send("held", "chat.send", input("held-run"));
+  const empty = { messages: [], inputReceipts: [] };
+  expect(await readHistory("before", ["held-run"])).toMatchObject(empty);
+  gateway.resolveDeferred("chat.send", { runId: "held-run", status: "started" });
+  gateway.emit("chat", { sessionKey, runId: "held-run", state: "final" });
+  expect(await readHistory("after", ["held-run"])).toMatchObject(empty);
+});
+
+it("separates display snapshots from durable receipts", async ({ gatewayPage }) => {
+  const { gateway, request, readHistory } = await connect(gatewayPage);
+  await request("send", "chat.send", input("committed-run"));
+  const messages = [{ role: "assistant", content: "Old snapshot" }];
+  gateway.setHistoryMessages(messages);
+  expect(await readHistory("history", ["committed-run"])).toMatchObject({
+    messages,
+    inputReceipts: [
+      { runId: "committed-run", state: "consumed", consumedByEventId: "mock-user:committed-run" },
+    ],
+  });
+  const next = await request("next", "chat.send", input("next-run"));
+  expect(next.messageSeq).toBe(2);
 });
