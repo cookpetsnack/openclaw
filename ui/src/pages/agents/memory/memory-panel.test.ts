@@ -504,7 +504,7 @@ it.each([
           return presented();
         },
         fallback: "Replacement page",
-        get children() {
+        children(_visible) {
           state = createAgentMemory(context, () => createAgentTarget("main"));
           return AgentMemoryView({ state });
         },
