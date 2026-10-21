@@ -1,4 +1,3 @@
-import { etc, getPublicKeyAsync, hashes, signAsync, utils } from "@noble/ed25519";
 import { gatewayCredentialScope } from "@openclaw/gateway-client/browser";
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
 import {
@@ -13,6 +12,7 @@ import {
 } from "../../../../src/shared/device-auth.js";
 import { getSafeLocalStorage } from "../../local-storage.ts";
 import { base64ToBytes, bytesToBase64 } from "../bytes-base64.ts";
+import { bytesToHex } from "../bytes-hex.ts";
 
 export type {
   DeviceTokenSummary,
@@ -20,18 +20,9 @@ export type {
   PendingDevice,
 } from "../../../../src/gateway/device-pairing-list.types.js";
 
-// @noble/ed25519 defaults its SHA-512 to crypto.subtle, which browsers gate to
-// secure contexts. On plain-HTTP origins the pure-JS digests load lazily so
-// device identity keeps working there — the signing key is the one credential
-// that never crosses the wire — while secure contexts pay no startup bytes.
+// Plain-HTTP origins lack crypto.subtle; load the pure-JS digest only when
+// fingerprinting an identity there. Secure contexts use the platform digest.
 const loadPureSha2 = () => import("@noble/hashes/sha2.js");
-const subtleSha512Async = hashes.sha512Async;
-hashes.sha512Async = async (message: Uint8Array) => {
-  if (globalThis.crypto?.subtle && subtleSha512Async) {
-    return await subtleSha512Async(message);
-  }
-  return Uint8Array.from((await loadPureSha2()).sha512(message));
-};
 
 type StoredIdentity = DeviceIdentity & {
   version: 1;
@@ -226,12 +217,13 @@ async function fingerprintPublicKey(publicKey: Uint8Array): Promise<string> {
   const subtle = globalThis.crypto?.subtle;
   if (subtle) {
     const hash = await subtle.digest("SHA-256", publicKey.slice().buffer);
-    return etc.bytesToHex(new Uint8Array(hash));
+    return bytesToHex(new Uint8Array(hash));
   }
-  return etc.bytesToHex((await loadPureSha2()).sha256(publicKey));
+  return bytesToHex((await loadPureSha2()).sha256(publicKey));
 }
 
 async function generateIdentity(): Promise<DeviceIdentity> {
+  const { getPublicKeyAsync, utils } = await import("./device-signing.runtime.ts");
   const privateKey = utils.randomSecretKey();
   const publicKey = await getPublicKeyAsync(privateKey);
   const deviceId = await fingerprintPublicKey(publicKey);
@@ -332,6 +324,7 @@ export async function loadOrCreateDeviceIdentity(): Promise<DeviceIdentity> {
 }
 
 export async function signDevicePayload(privateKeyBase64Url: string, payload: string) {
+  const { signAsync } = await import("./device-signing.runtime.ts");
   const key = base64UrlDecode(privateKeyBase64Url);
   const data = new TextEncoder().encode(payload);
   const sig = await signAsync(data, key);
