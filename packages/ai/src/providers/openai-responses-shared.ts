@@ -96,7 +96,7 @@ type ResponsesReasoningSummary = "auto" | "detailed" | "concise" | null;
 
 type ResponsesCommonParamsOptions = Pick<
   StreamOptions,
-  "maxTokens" | "temperature" | "responseFormat"
+  "maxTokens" | "temperature" | "responseFormat" | "onPayload"
 > & {
   reasoningEffort?: OpenAIRequestReasoningEffort;
   reasoningSummary?: ResponsesReasoningSummary;
@@ -154,7 +154,10 @@ export function applyCommonResponsesParams<TApi extends Api>(
   }
 
   if (context.tools) {
-    const tools = convertResponsesToolPayload(context.tools, { model });
+    const tools = convertResponsesToolPayload(context.tools, {
+      model,
+      mutableParameters: Boolean(options?.onPayload),
+    });
     if (tools.length > 0) {
       params.tools = tools;
     }

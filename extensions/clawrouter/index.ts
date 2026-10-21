@@ -35,6 +35,7 @@ import {
   normalizeFastMode,
 } from "openclaw/plugin-sdk/string-coerce-runtime";
 import { containsAsciiControlCharacter } from "openclaw/plugin-sdk/string-normalization-runtime";
+import { clawrouterMediaUnderstandingProvider } from "./audio-transcription.js";
 import { normalizeClawRouterApiBaseUrl, normalizeClawRouterRootUrl } from "./base-url.js";
 import { buildClawRouterDecisionProvider } from "./decision-provider.js";
 import { buildClawRouterImageGenerationProvider } from "./image-generation-provider.js";
@@ -427,6 +428,7 @@ export default defineSingleProviderPluginEntry({
   manifest,
   register(api) {
     api.registerSpeechProvider(buildClawRouterSpeechProvider);
+    api.registerMediaUnderstandingProvider(clawrouterMediaUnderstandingProvider);
     api.registerDecisionProvider(buildClawRouterDecisionProvider());
     api.registerImageGenerationProvider(buildClawRouterImageGenerationProvider());
     api.registerModelCatalogProvider({
