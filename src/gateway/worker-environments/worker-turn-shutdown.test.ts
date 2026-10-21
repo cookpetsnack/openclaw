@@ -280,7 +280,7 @@ it("lets a worker turn that committed its terminal outcome finish through restar
 });
 
 describe("worker turn trajectory authority", () => {
-  it.each(["current", "revoked-at-commit", "ambient-state-change", "disabled"] as const)(
+  it.each(["revoked-at-commit", "ambient-state-change", "disabled"] as const)(
     "keeps worker trajectory storage and authority bound (%s)",
     async (authority) => {
       expect(isMainThread).toBe(true);

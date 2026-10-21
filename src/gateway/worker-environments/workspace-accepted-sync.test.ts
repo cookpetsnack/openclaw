@@ -158,7 +158,11 @@ function expectTransactions(
   }
 }
 
-function mockPublication(run: (action: string) => Promise<SpawnResult>, verifyManifest = false) {
+type TransactionOutcome = SpawnResult | Error;
+function mockPublication(
+  outcomes: Record<string, TransactionOutcome | TransactionOutcome[]>,
+  verifyManifest = false,
+) {
   const transactionCalls: Array<{ action: string; nonce: string }> = [];
   const publisher = createPublisher({
     runWorkspaceCommand: async (command) => {
@@ -167,7 +171,19 @@ function mockPublication(run: (action: string) => Promise<SpawnResult>, verifyMa
       }
       const action = command.argv[3]!;
       transactionCalls.push({ action, nonce: command.argv[5]! });
-      return action === "begin" ? result({ stdout: "/remote/staging\n" }) : run(action);
+      if (action === "begin") {
+        return result({ stdout: "/remote/staging\n" });
+      }
+      const configured = outcomes[action];
+      const outcome = Array.isArray(configured)
+        ? configured.length > 1
+          ? configured.shift()
+          : configured[0]
+        : configured;
+      if (outcome instanceof Error) {
+        throw outcome;
+      }
+      return outcome ?? result();
     },
   });
   return {
@@ -594,14 +610,9 @@ describe("accepted workspace publication", () => {
   );
 
   it("keeps an unobservable apply pending when settlement is unobservable", async () => {
-    const { actions, publishing } = mockPublication(async (action) => {
-      if (action === "apply") {
-        return commandFailure("apply");
-      }
-      if (action === "settle") {
-        throw new WorkerTunnelOwnerDisconnectedError();
-      }
-      return result();
+    const { actions, publishing } = mockPublication({
+      apply: commandFailure("apply"),
+      settle: new WorkerTunnelOwnerDisconnectedError(),
     });
     const thrown = await publishing.catch((error: unknown) => error);
     expect(thrown).toBeInstanceOf(AcceptedWorkspacePublicationIndeterminateError);
@@ -629,31 +640,18 @@ describe("accepted workspace publication", () => {
       actions: ["begin", "apply", "settle", "rollback"],
     },
   ])("uses the safe rollback path after $name", async ({ apply, settle, actions: expected }) => {
-    const { actions, publishing } = mockPublication(async (action) => {
-      if (action === "apply") {
-        return apply;
-      }
-      if (action === "settle") {
-        if (!settle) {
-          throw new Error("unexpected settlement");
-        }
-        return settle;
-      }
-      return result();
+    const { actions, publishing } = mockPublication({
+      apply,
+      settle: settle ?? new Error("unexpected settlement"),
     });
     await expect(publishing).rejects.toThrow(/apply (?:rejected|transport lost)/u);
     expect(actions()).toEqual(expected);
   });
 
   it("keeps an ambiguous apply pending when settlement output is malformed", async () => {
-    const { actions, publishing } = mockPublication(async (action) => {
-      if (action === "apply") {
-        return commandFailure("apply");
-      }
-      if (action === "settle") {
-        return result({ stdout: '{"version":1,"outcome":"applied","extra":true}\n' });
-      }
-      return result();
+    const { actions, publishing } = mockPublication({
+      apply: commandFailure("apply"),
+      settle: result({ stdout: '{"version":1,"outcome":"applied","extra":true}\n' }),
     });
     await expect(publishing).rejects.toBeInstanceOf(AcceptedWorkspacePublicationIndeterminateError);
     expect(actions()).toEqual(["begin", "apply", "settle"]);
@@ -668,14 +666,13 @@ describe("accepted workspace publication", () => {
   ])(
     "handles an ambiguous commit when $name",
     async ({ outcome, retry, secondCommit, expected }) => {
-      let commitCount = 0;
-      const { transactionCalls, publishing } = mockPublication(async (action) => {
-        if (action === "commit") {
-          commitCount += 1;
-          return commitCount === 1 ? commandFailure("commit") : secondCommit;
-        }
-        return action === "settle" ? settlement(outcome) : result();
-      }, true);
+      const { transactionCalls, publishing } = mockPublication(
+        {
+          commit: [commandFailure("commit"), secondCommit],
+          settle: settlement(outcome),
+        },
+        true,
+      );
 
       if (expected === "success") {
         await expect(publishing).resolves.toBeUndefined();
