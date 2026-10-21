@@ -13,7 +13,7 @@ import {
 import type { OpenClawConfig } from "../../config/types.openclaw.js";
 import { claimAgentRunContext, releaseAgentRunContext } from "../../infra/agent-run-registry.js";
 import type { OpenClawTestState } from "../../test-utils/openclaw-test-state.js";
-import { sessionMutationHandlers } from "./sessions-mutations.js";
+import { startSessionMutationRequest } from "./sessions-mutations.native-consent.test-support.js";
 import type {
   GatewayClient,
   GatewayRequestContext,
@@ -32,13 +32,18 @@ export function registerSessionSandboxMutationTests({
   const withSession = (
     name: string,
     entry: Partial<SessionEntry>,
-    run: (key: string, scope: Parameters<typeof loadSessionEntry>[0]) => Promise<void>,
+    run: (fixture: {
+      key: string;
+      scope: Parameters<typeof loadSessionEntry>[0];
+      unchanged: () => void;
+    }) => Promise<void>,
   ) =>
     withState(async (state) => {
       const key = `agent:main:${name}`;
       const scope = { agentId: "main", env: state.env, sessionKey: key };
       await upsertSessionEntryCore(scope, { sessionId: name, updatedAt: 1, ...entry });
-      await run(key, scope);
+      const before = loadSessionEntry(scope);
+      await run({ key, scope, unchanged: () => expect(loadSessionEntry(scope)).toEqual(before) });
     });
   const targetParams = (method: string, key: string, patch: Record<string, unknown>) =>
     method === "sessions.patch" ? { key, ...patch } : { targets: [{ key }], patch };
@@ -54,14 +59,12 @@ export function registerSessionSandboxMutationTests({
     cfg: OpenClawConfig = {},
     sessionMutationAuthorization?: SessionMutationAuthorization,
   ) => {
-    const respond = vi.fn();
-    await sessionMutationHandlers[method]!({
-      params,
+    const { respond, running } = startSessionMutationRequest(method, params, {
       client: requestClient,
       context: context(cfg),
-      respond,
       sessionMutationAuthorization,
-    } as never);
+    });
+    await running;
     return respond;
   };
   const errorContaining = (message: string) =>
@@ -83,15 +86,15 @@ export function registerSessionSandboxMutationTests({
     { method: "sessions.patchMany", sandboxMode: null },
   ] as const)("$method rejects non-admin sandbox=$sandboxMode", async ({ method, sandboxMode }) => {
     const before = sandboxMode === null ? "off" : undefined;
-    await withSession("sandbox-authority", { sandboxMode: before }, async (key, scope) => {
+    await withSession("sandbox-authority", { sandboxMode: before }, async ({ key, unchanged }) => {
       const respond = await invoke(method, targetParams(method, key, { sandboxMode }), client());
       expectRefused(respond, "operator.admin");
-      expect(loadSessionEntry(scope)?.sandboxMode).toBe(before);
+      unchanged();
     });
   });
 
   it("keeps opt-out local and restores inheritance with CAS", () =>
-    withSession("sandbox-choice", { lifecycleRevision: "generation" }, async (key, scope) => {
+    withSession("sandbox-choice", { lifecycleRevision: "generation" }, async ({ key, scope }) => {
       const sibling = "agent:main:sandbox-sibling";
       const cfg: OpenClawConfig = { agents: { defaults: { sandbox: { mode: "all" } } } };
       await upsertSessionEntryCore(
@@ -136,7 +139,7 @@ export function registerSessionSandboxMutationTests({
       withSession(
         "required-sandbox",
         { sandbox: "required", permissionMode: "guarded" },
-        async (key, scope) => {
+        async ({ key, unchanged }) => {
           const respond = await invoke(
             method,
             targetParams(method, key, {
@@ -150,12 +153,7 @@ export function registerSessionSandboxMutationTests({
             "requires a sandbox",
             method === "sessions.patchMany" ? key : undefined,
           );
-          expect(loadSessionEntry(scope)).toMatchObject({
-            sandbox: "required",
-            permissionMode: "guarded",
-          });
-          expect(loadSessionEntry(scope)).not.toHaveProperty("sandboxMode");
-          expect(loadSessionEntry(scope)).not.toHaveProperty("label");
+          unchanged();
         },
       ),
   );
@@ -218,7 +216,7 @@ export function registerSessionSandboxMutationTests({
       withSession(
         "sandbox-replaced",
         { sessionId: "current", lifecycleRevision: "current" },
-        async (key, scope) => {
+        async ({ key, unchanged }) => {
           const respond = await invoke("sessions.patch", {
             key,
             sandboxMode: "off",
@@ -226,7 +224,7 @@ export function registerSessionSandboxMutationTests({
             ...expectation,
           });
           expectRefused(respond, "changed before patch");
-          expect(loadSessionEntry(scope)).not.toHaveProperty("sandboxMode");
+          unchanged();
         },
       ),
   );
@@ -235,7 +233,7 @@ export function registerSessionSandboxMutationTests({
     "rejects sandbox=%s during embedded runs",
     async (sandboxMode) => {
       const before = sandboxMode === null ? "off" : undefined;
-      await withSession("sandbox-active", { sandboxMode: before }, async (key, scope) => {
+      await withSession("sandbox-active", { sandboxMode: before }, async ({ key, unchanged }) => {
         const sessionId = "sandbox-active";
         const handle = createEmbeddedRunHandle();
         setActiveEmbeddedRun(sessionId, handle, key);
@@ -244,7 +242,7 @@ export function registerSessionSandboxMutationTests({
             await invoke("sessions.patch", { key, sandboxMode }),
             "Stop the active run",
           );
-          expect(loadSessionEntry(scope)?.sandboxMode).toBe(before);
+          unchanged();
         } finally {
           clearActiveEmbeddedRun(sessionId, handle, key);
         }
@@ -258,7 +256,7 @@ export function registerSessionSandboxMutationTests({
     { method: "sessions.patchMany", change: "run-started" },
     { method: "sessions.patchMany", change: "scope-revoked" },
   ] as const)("$method rechecks $change at the final sandbox write fence", ({ method, change }) =>
-    withSession("sandbox-fence", {}, async (key, scope) => {
+    withSession("sandbox-fence", {}, async ({ key, unchanged }) => {
       const sessionId = "sandbox-fence";
       const requestClient = adminClient();
       let claim: string | undefined;
@@ -288,8 +286,7 @@ export function registerSessionSandboxMutationTests({
           change === "scope-revoked" ? "operator.admin" : "Stop the active run",
           method === "sessions.patchMany" ? key : undefined,
         );
-        expect(loadSessionEntry(scope)).not.toHaveProperty("sandboxMode");
-        expect(loadSessionEntry(scope)).not.toHaveProperty("label");
+        unchanged();
       } finally {
         if (claim) {
           releaseAgentRunContext(runId, claim);
