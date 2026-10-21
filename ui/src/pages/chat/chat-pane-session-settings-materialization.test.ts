@@ -38,6 +38,13 @@ function materializationReceipt(row: ReturnType<typeof materializedRow>): Sessio
   return { ok: true, key, path: "", entry: { sessionId, updatedAt, thinkingLevel } };
 }
 
+async function mountSettingsPane(fixture: ReturnType<typeof createMountedPanes>, key: string) {
+  await fixture.sessions.refresh({ agentId: "main", force: true });
+  const pane = fixture.mount(key);
+  await refreshPane(pane);
+  return pane;
+}
+
 it.each([
   { initialState: "absent", source: "preceding write" },
   { initialState: "placeholder", source: "preceding write" },
@@ -81,15 +88,12 @@ it.each([
         updatedAt: 4,
       });
     });
-    const { sessions, mount } = createMountedPanes(rows, "main", undefined, {
-      "sessions.patch": patch,
-    });
+    const fixture = createMountedPanes(rows, "main", undefined, { "sessions.patch": patch });
+    const { sessions } = fixture;
     let first: Promise<boolean> | undefined;
     let queued: Promise<boolean> | undefined;
     try {
-      await sessions.refresh({ agentId: "main", force: true });
-      const pane = mount(placeholder.key);
-      await refreshPane(pane);
+      const pane = await mountSettingsPane(fixture, placeholder.key);
       expect(selectedChatSessionRow(pane.state)).toEqual(
         initialState === "placeholder" ? expect.objectContaining(placeholder) : undefined,
       );
@@ -179,7 +183,7 @@ it.each(["unbound", "materialized"] as const)(
       rows[0] = { ...materialized, thinkingLevel: "medium", updatedAt: 3 };
       return materializationReceipt({ ...materialized, thinkingLevel: "medium", updatedAt: 3 });
     });
-    const { sessions, mount, context } = createMountedPanes(rows, "main", undefined, {
+    const fixture = createMountedPanes(rows, "main", undefined, {
       "sessions.patch": patch,
       "sessions.list": (_method, raw) => {
         if (firstAcknowledged && holdPrimaryRead && asOptionalRecord(raw)?.archived !== "all") {
@@ -189,15 +193,14 @@ it.each(["unbound", "materialized"] as const)(
         return sessionsResult([...rows], 2);
       },
     });
+    const { sessions, context } = fixture;
     let first: Promise<boolean> | undefined;
     let middle: Promise<boolean> | undefined;
     let last: Promise<boolean> | undefined;
     let managedRead: Promise<void> | undefined;
     let stopManaged: (() => void) | undefined;
     try {
-      await sessions.refresh({ agentId: "main", force: true });
-      const pane = mount(key);
-      await refreshPane(pane);
+      const pane = await mountSettingsPane(fixture, key);
       pane.state.chatModelCatalog = [
         { id: "fixture-model", name: "Fixture model", provider: "fixture", reasoning: true },
       ];
@@ -342,15 +345,12 @@ it.each([
       started.resolve();
       return reply.promise;
     });
-    const { sessions, mount } = createMountedPanes(rows, "main", undefined, {
-      "sessions.patch": patch,
-    });
+    const fixture = createMountedPanes(rows, "main", undefined, { "sessions.patch": patch });
+    const { sessions } = fixture;
     let first: Promise<boolean> | undefined;
     const queued: Promise<boolean>[] = [];
     try {
-      await sessions.refresh({ agentId: "main", force: true });
-      const pane = mount(key);
-      await refreshPane(pane);
+      const pane = await mountSettingsPane(fixture, key);
       expect(selectedChatSessionRow(pane.state)?.sessionId).toBeUndefined();
       first = switchChatSetting(pane.state, { kind: "thinkingLevel", value: "high" });
       queued.push(switchChatSetting(pane.state, { kind: "thinkingLevel", value: "low" }));
@@ -422,6 +422,124 @@ it.each([
         reply.resolve(firstReceipt);
       }
       await Promise.allSettled([first, ...queued]);
+      await vi.dynamicImportSettled();
+    }
+  },
+);
+
+it.each(["current", "replacement", "same-client reconnect", "failed readback", "unbound"] as const)(
+  "settles queued settings against their current owner (%s)",
+  async (outcome) => {
+    const readbackFails = outcome === "failed readback";
+    const key = "agent:main:settings";
+    const row = materializedRow(key, "acknowledged-session");
+    const receipt = materializationReceipt(row);
+    const rows: GatewaySessionRow[] = [];
+    const firstReply = createDeferred<SessionsPatchResult>();
+    const latestReply = createDeferred<SessionsPatchResult>();
+    const dispatched = createDeferred();
+    const readbackError = new Error("Synthetic roster read failure after settings ACK");
+    let acknowledged = false;
+    let failedReads = 0;
+    const patch = vi.fn<GatewayRequestHandler>(() => {
+      if (patch.mock.calls.length === 1) {
+        return firstReply.promise.then((result) => {
+          acknowledged = true;
+          return result;
+        });
+      }
+      dispatched.resolve();
+      return latestReply.promise;
+    });
+    const mounted = createMountedPanes(rows, "main", undefined, {
+      "sessions.patch": patch,
+      ...(readbackFails
+        ? {
+            "sessions.list": () => {
+              if (acknowledged) {
+                failedReads++;
+                throw readbackError;
+              }
+              return sessionsResult([...rows], 1);
+            },
+          }
+        : {}),
+    });
+    const pane = await mountSettingsPane(mounted, key);
+    const state = pane.state;
+    const selected = () => selectedChatSessionRow(state);
+    const owned = outcome === "current" || outcome === "unbound";
+    expect(selected()).toBeUndefined();
+    const first = switchChatSetting(state, { kind: "thinkingLevel", value: "high" });
+    const latest = switchChatSetting(state, { kind: "thinkingLevel", value: "low" });
+    try {
+      expect(patch).toHaveBeenCalledOnce();
+      if (outcome === "unbound") {
+        firstReply.reject(new Error("Synthetic superseded first rejection"));
+      } else {
+        if (outcome !== "failed readback") {
+          rows.push(row);
+        }
+        firstReply.resolve(receipt);
+      }
+      await expect(first).resolves.toBe(outcome !== "unbound");
+      await Promise.race([dispatched.promise, latest]);
+      expect(patch).toHaveBeenCalledTimes(2);
+      if (outcome === "unbound") {
+        expect(patch.mock.calls[1]?.[1]).toEqual({ key, thinkingLevel: "low" });
+        expect(state.chatError).toBeNull();
+      } else {
+        expect(patch.mock.calls[1]?.[1]).toMatchObject({
+          key,
+          thinkingLevel: "low",
+          expectedSessionId: row.sessionId,
+        });
+      }
+      if (outcome === "failed readback") {
+        expect(failedReads).toBeGreaterThan(0);
+        expect(selected()).toBeUndefined();
+        expect(mounted.sessions.state.error).toBe(readbackError.message);
+        expect(state.sessionsError).toBe(readbackError.message);
+        latestReply.resolve({
+          ...receipt,
+          entry: { ...receipt.entry, thinkingLevel: "low", updatedAt: 3 },
+        });
+        await expect(latest).resolves.toBe(true);
+        expect(mounted.sessions.state.error).toBe(readbackError.message);
+        expect(state).toMatchObject({
+          sessionsError: readbackError.message,
+          chatError: null,
+          lastError: null,
+        });
+        return;
+      }
+      if (outcome !== "unbound") {
+        expect(selected()).toMatchObject({ sessionId: row.sessionId, thinkingLevel: "low" });
+      }
+      if (outcome === "replacement") {
+        rows[0] = { ...row, sessionId: "replacement-session", updatedAt: 3 };
+        await mounted.sessions.refresh({ agentId: "main", force: true });
+      } else if (outcome === "same-client reconnect") {
+        const snapshot = mounted.context.gateway.snapshot;
+        pane.applyGatewaySnapshot({ ...snapshot, phase: "reconnecting", hello: null });
+        pane.applyGatewaySnapshot(snapshot);
+      }
+      if (!owned) {
+        state.lastError = state.chatError = "Synthetic current owner error";
+      }
+      latestReply.reject(new Error("Synthetic latest acknowledged-target rejection"));
+      await expect(latest).resolves.toBe(false);
+      expect(state.chatError).toContain(
+        owned ? "Synthetic latest acknowledged-target rejection" : "Synthetic current owner error",
+      );
+      expect(state.lastError).toBe(state.chatError);
+      if (outcome === "current") {
+        expect(selected()).toMatchObject({ sessionId: row.sessionId, thinkingLevel: "high" });
+      }
+    } finally {
+      firstReply.resolve(receipt);
+      latestReply.resolve(receipt);
+      await Promise.allSettled([first, latest]);
       await vi.dynamicImportSettled();
     }
   },
