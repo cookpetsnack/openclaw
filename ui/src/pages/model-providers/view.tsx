@@ -206,8 +206,7 @@ function ApiKeyInput(props: {
 
 function KeyEditor(props: ModelProvidersViewProps & { card: ModelProviderCard }) {
   const busy = () =>
-    Boolean(props.apiKeySaving?.[`key:${props.card.id}`]) ||
-    Boolean(props.busy[`key:${props.card.id}`]);
+    Boolean(props.apiKeySaving?.[`key:${props.card.id}`] || props.busy[`key:${props.card.id}`]);
   const authModeBlocked = () =>
     props.card.apiKeySupported === false ||
     Boolean(props.card.configAuthMode && props.card.configAuthMode !== "api-key");
@@ -242,8 +241,7 @@ function ProviderActions(props: ModelProvidersViewProps & { card: ModelProviderC
   const authModeBlocked = () =>
     Boolean(props.card.configAuthMode && props.card.configAuthMode !== "api-key");
   const keyDisabled = () =>
-    Boolean(props.apiKeySaving?.[`key:${props.card.id}`]) ||
-    Boolean(props.busy[`key:${props.card.id}`]) ||
+    Boolean(props.apiKeySaving?.[`key:${props.card.id}`] || props.busy[`key:${props.card.id}`]) ||
     configMutationDisabled(props) ||
     authModeBlocked();
   const keyTitle = () =>
