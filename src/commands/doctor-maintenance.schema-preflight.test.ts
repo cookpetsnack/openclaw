@@ -53,20 +53,15 @@ const outputOf = (runtime: ReturnType<typeof runtimeMock>) =>
 
 function readRows(pathname: string, sql: string, ...params: string[]) {
   const { DatabaseSync } = requireNodeSqlite();
-  const db = new DatabaseSync(pathname, { readOnly: true });
-  try {
-    return db.prepare(sql).all(...params);
-  } finally {
-    db.close();
-  }
+  using db = new DatabaseSync(pathname, { readOnly: true });
+  return db.prepare(sql).all(...params);
 }
 
 function writeDatabase(pathname: string, sql: string) {
   fs.mkdirSync(path.dirname(pathname), { recursive: true });
   const { DatabaseSync } = requireNodeSqlite();
-  const database = new DatabaseSync(pathname);
+  using database = new DatabaseSync(pathname);
   database.exec(sql);
-  database.close();
 }
 
 it("fails repair for an old configured agentDir schema", async () => {
