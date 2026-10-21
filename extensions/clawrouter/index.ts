@@ -605,7 +605,9 @@ export default defineSingleProviderPluginEntry({
       resolveFastModeSupport,
       resolveServiceTiers,
       resolveNativeWebSearch,
-      wrapSimpleCompletionStreamFn: wrapClawRouterProviderStream,
+      wrapSimpleCompletionStreamFn: (ctx) =>
+        // Isolated completions share routing/auth but must remain tool-free.
+        wrapClawRouterProviderStream({ ...ctx, nativeWebSearchAllowedByToolPolicy: false }),
       wrapStreamFn: wrapClawRouterProviderStream,
       buildReplayPolicy: (ctx) => {
         if (ctx.modelApi === "anthropic-messages") {

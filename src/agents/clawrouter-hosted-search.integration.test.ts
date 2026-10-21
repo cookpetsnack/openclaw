@@ -12,6 +12,8 @@ import type { Model } from "../llm/types.js";
 import { clearLiveCatalogCacheForTests } from "../plugin-sdk/provider-catalog-live-runtime.js";
 import { createPluginMetadataSnapshotFixture } from "../plugins/plugin-metadata.test-support.js";
 import { attachModelProviderRuntimePluginHandle } from "../plugins/provider-hook-runtime.js";
+import { createEmptyPluginRegistry } from "../plugins/registry-empty.js";
+import { withPluginRuntimeGenerationScope } from "../plugins/runtime/generation-scope.js";
 import type { ProviderPlugin } from "../plugins/types.js";
 import { loadBundledPluginFacade } from "../test-utils/bundled-plugin-public-surface.js";
 import { createOpenClawTestState } from "../test-utils/openclaw-test-state.js";
@@ -20,6 +22,9 @@ import { reserveTestPortListener } from "../test-utils/port-claims.js";
 import { applyModelProviderToolPolicy } from "./agent-tools.model-provider-policy.js";
 import type { AnyAgentTool } from "./agent-tools.types.js";
 import { applyExtraParamsToAgent } from "./embedded-agent-runner/extra-params.js";
+import { createEmptyPreparedModelRuntimeFixture } from "./embedded-agent-runner/model.fixture.test-support.js";
+import { createEmptyAgentDiscoveryStores } from "./embedded-agent-runner/model.js";
+import { prepareEmbeddedRunTransport } from "./embedded-agent-runner/run/runtime-preparation.js";
 import { resolveNativeWebSearchRoute } from "./native-web-search.js";
 import type { StreamFn } from "./runtime/index.js";
 
@@ -78,6 +83,7 @@ describe("ClawRouter admitted hosted search HTTP composition", () => {
     | "sse"
     | "terminal"
     | "reject"
+    | "rotate"
     | "stream-error"
     | "hold"
     | "annotation"
@@ -90,6 +96,7 @@ describe("ClawRouter admitted hosted search HTTP composition", () => {
     | "json-invalid" = "sse";
   let held = createDeferred<ServerResponse>();
   let closed = createDeferred();
+  let rejectedRotationKey: string | undefined;
   const requests: Array<{ path?: string; authorization?: string; body: Record<string, unknown> }> =
     [];
   const catalogAuth: string[] = [];
@@ -201,6 +208,11 @@ describe("ClawRouter admitted hosted search HTTP composition", () => {
               authorization: request.headers.authorization,
               body: JSON.parse(Buffer.concat(chunks).toString("utf8")),
             });
+            if (mode === "rotate" && request.headers.authorization === rejectedRotationKey) {
+              reply.writeHead(429, { "content-type": "application/json" });
+              reply.end(JSON.stringify({ error: { message: "Synthetic profile rate limit" } }));
+              return;
+            }
             if (mode === "reject") {
               reply.writeHead(400, { "content-type": "application/json" });
               reply.end(
@@ -352,12 +364,12 @@ describe("ClawRouter admitted hosted search HTTP composition", () => {
               );
               return;
             }
-            reply.end(
-              sse({
-                type: "response.completed",
-                response: { ...response, output: [search, terminalMessage] },
-              }),
-            );
+            const terminal = sse({
+              type: "response.completed",
+              response: { ...response, output: [search, terminalMessage] },
+            });
+            // Identical terminal replay must not produce another delta or absolute text_end.
+            reply.end(terminal + terminal);
           })().catch((error: unknown) =>
             reply.destroy(error instanceof Error ? error : new Error(String(error))),
           );
@@ -411,6 +423,9 @@ describe("ClawRouter admitted hosted search HTTP composition", () => {
       } satisfies Model<"openai-responses">,
       { provider: "clawrouter", modelId: id, config, plugin: provider },
     );
+    return assemble(model, config);
+  }
+  function assemble(model: Model, config: OpenClawConfig) {
     const policy = {
       config,
       modelProvider: model.provider,
@@ -431,7 +446,7 @@ describe("ClawRouter admitted hosted search HTTP composition", () => {
       agent,
       config,
       "clawrouter",
-      id,
+      model.id,
       {},
       "high",
       "fixture",
@@ -466,6 +481,142 @@ describe("ClawRouter admitted hosted search HTTP composition", () => {
     return { result: await stream.result(), events };
   }
 
+  it.each(["wrapStreamFn", "wrapSimpleCompletionStreamFn"] as const)(
+    "%s preserves the isolated-completion tool boundary on an admitted route",
+    async (hook) => {
+      mode = "terminal";
+      const prepared = prepare();
+      const wrapped = provider[hook]?.({
+        provider: "clawrouter",
+        modelId: prepared.model.id,
+        agentId: "fixture",
+        streamFn: streamSimple,
+      });
+      if (!wrapped) {
+        throw new Error("Missing ClawRouter stream hook");
+      }
+      const allowed = new Set<string>();
+      const { result } = await call(
+        { ...prepared, streamFn: wrapped, assembled: [] },
+        {
+          sessionId: "synthetic-session",
+          onPayload: (payload) => {
+            // An explicit caller payload must not gain tools or change its effort in isolation.
+            return { ...(payload as Record<string, unknown>), reasoning: { effort: "minimal" } };
+          },
+          openclawCodeModeAllowedHostedToolTypes: allowed,
+        },
+      );
+      expect(result.stopReason).toBe("stop");
+      const regular = hook === "wrapStreamFn";
+      expect(requests.at(-1)?.body.tools ?? []).toEqual(regular ? [{ type: "web_search" }] : []);
+      expect(requests.at(-1)?.body.reasoning).toMatchObject({
+        effort: regular ? "low" : "minimal",
+      });
+      expect(allowed).toEqual(new Set(regular ? ["web_search"] : []));
+      expect(requests.at(-1)?.authorization).toBe("Bearer synthetic-admitted");
+    },
+  );
+
+  it.each(["admitted", "denied"] as const)(
+    "rematerializes catalog admission after production auth-controller rotation from %s",
+    async (first) => {
+      const second = first === "admitted" ? "denied" : "admitted";
+      const ids = [first, second].map((key) => "clawrouter:" + key);
+      await state.writeAuthProfiles(
+        {
+          version: 1,
+          profiles: Object.fromEntries(
+            ["admitted", "denied"].map((key) => [
+              "clawrouter:" + key,
+              { type: "api_key", provider: "clawrouter", key: "synthetic-" + key },
+            ]),
+          ),
+        },
+        "fixture",
+      );
+      const config: OpenClawConfig = {
+        auth: { order: { clawrouter: ids } },
+        // Authored configuration must not pin a discovered key's private route facts.
+        models: { providers: { clawrouter: { baseUrl, models: [] } } },
+      };
+      const registry = createEmptyPluginRegistry();
+      registry.providers.push({ pluginId: "clawrouter", source: "bundled", provider });
+      const generation = {
+        ...createEmptyPreparedModelRuntimeFixture({
+          agentDir: state.agentDir("fixture"),
+          config,
+          metadataSnapshot,
+          createStores: createEmptyAgentDiscoveryStores,
+        }),
+        workspaceDir: state.workspaceDir,
+        pluginRegistry: registry,
+      };
+      await withPluginRuntimeGenerationScope(generation, async () => {
+        const runtime = await prepareEmbeddedRunTransport({
+          assertCurrent() {},
+          runParams: {
+            runId: "synthetic-rotation-" + first,
+            sessionId: "synthetic-rotation",
+            agentId: "fixture",
+            prompt: "Synthetic search",
+            config,
+            workspaceDir: state.workspaceDir,
+            timeoutMs: 5000,
+          },
+          provider: "clawrouter",
+          modelId: "alias/search-fixture",
+          agentDir: generation.agentDir,
+          workspaceDir: state.workspaceDir,
+          globalLane: "test",
+          hookRunner: undefined,
+          hookContext: { sessionId: "synthetic-rotation", workspaceDir: state.workspaceDir },
+          markStartupStage() {},
+          notifyExecutionPhase() {},
+          fallbackConfigured: false,
+          preparedModelRuntime: generation,
+        });
+        const before = requests.length;
+        mode = "rotate";
+        rejectedRotationKey = "Bearer synthetic-" + first;
+        try {
+          const dispatch = async () => {
+            const snapshot = runtime.snapshot();
+            return call(assemble(snapshot.effectiveModel, config), {
+              apiKey: snapshot.apiKeyInfo?.apiKey,
+            });
+          };
+          expect(runtime.snapshot().lastProfileId).toBe(ids[0]);
+          const failed = await dispatch();
+          expect(failed.result.stopReason).toBe("error");
+          expect(failed.result.errorMessage).toContain("Synthetic profile rate limit");
+          expect(await runtime.advanceAttemptAuthProfile()).toBe(true);
+          expect(runtime.snapshot().lastProfileId).toBe(ids[1]);
+          expect((await dispatch()).result.stopReason).toBe("stop");
+          const attempts = requests.slice(before);
+          expect(attempts.map((request) => request.authorization)).toEqual([
+            "Bearer synthetic-" + first,
+            "Bearer synthetic-" + second,
+          ]);
+          for (const [index, key] of [first, second].entries()) {
+            expect(attempts[index]?.body.tools).toMatchObject(
+              key === "admitted"
+                ? [{ type: "function", name: "read" }, { type: "web_search" }]
+                : [
+                    { type: "function", name: "read" },
+                    { type: "function", name: "web_search" },
+                  ],
+            );
+          }
+          expect(await runtime.advanceAttemptAuthProfile()).toBe(false);
+        } finally {
+          runtime.stopRuntimeAuthRefreshTimer();
+          rejectedRotationKey = undefined;
+        }
+      });
+    },
+  );
+
   it.each(["json", "sse", "terminal", "annotation", "late-citation"] as const)(
     "sends admitted hosted search and projects clickable citations from %s",
     async (wire) => {
@@ -482,9 +633,36 @@ describe("ClawRouter admitted hosted search HTTP composition", () => {
         { type: "text", text: "Synthetic source. [Fixture source](https://example.test/source)" },
       ]);
       expect(result.content.filter((part) => part.type === "toolCall")).toEqual([]);
-      expect(events.findLast((event) => event.type === "text_end")).toMatchObject({
-        content: "Synthetic source. [Fixture source](https://example.test/source)",
-      });
+      const fullText = "Synthetic source. [Fixture source](https://example.test/source)";
+      expect(
+        events.filter((event) => event.type === "text_end").map((event) => event.content),
+      ).toEqual(wire === "late-citation" ? ["Synthetic source.", fullText] : [fullText]);
+      if (wire === "late-citation") {
+        expect(events.map((event) => event.type)).toEqual([
+          "start",
+          "text_start",
+          "text_delta",
+          "text_end",
+          "text_delta",
+          "text_end",
+          "done",
+        ]);
+        expect(
+          events
+            .filter((event) => event.type.startsWith("text_"))
+            .map((event) => ({
+              type: event.type,
+              index: "contentIndex" in event ? event.contentIndex : undefined,
+              text: "delta" in event ? event.delta : "content" in event ? event.content : undefined,
+            })),
+        ).toEqual([
+          { type: "text_start", index: 0, text: undefined },
+          { type: "text_delta", index: 0, text: "Synthetic source." },
+          { type: "text_end", index: 0, text: "Synthetic source." },
+          { type: "text_delta", index: 0, text: " [Fixture source](https://example.test/source)" },
+          { type: "text_end", index: 0, text: fullText },
+        ]);
+      }
       expect(allowed).toEqual(new Set(["web_search"]));
       expect(requests.at(-1)).toMatchObject({
         path: "/v1/responses",
@@ -524,9 +702,13 @@ describe("ClawRouter admitted hosted search HTTP composition", () => {
           ? ["https://example.test/second", "https://example.test/source"]
           : ["https://example.test/source", "https://example.test/second"],
       );
-      expect(events.findLast((event) => event.type === "text_end")).toMatchObject({
-        content: text,
-      });
+      expect(
+        events.filter((event) => event.type === "text_end").map((event) => event.content),
+      ).toEqual(
+        wire === "earlier-citation"
+          ? ["Synthetic source. [Second](https://example.test/second)", text]
+          : ["Synthetic source.", text],
+      );
     },
   );
   it("does not replace completed prose or attach sources from a stale terminal message", async () => {
