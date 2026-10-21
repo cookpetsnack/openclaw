@@ -1995,6 +1995,7 @@ export const PR_PROTECTED_RUNTIME_TEST_FILES: readonly string[] = [
   "src/commands/doctor-lint.crabbox.test.ts",
   "src/commands/doctor-lint.oauth.test.ts",
   "src/commands/doctor-lint.plugin-path-inspection.test.ts",
+  "src/commands/doctor-lint.snapshot-cleanup.test.ts",
   "src/commands/doctor-lint.state-isolation.test.ts",
   "src/commands/doctor-lint.test.ts",
   "src/commands/doctor-lint.update-warnings.test.ts",
