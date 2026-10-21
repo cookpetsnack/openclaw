@@ -384,7 +384,7 @@ describe("Vitest pair benchmark", () => {
     const pinned = path.join(pinnedDir, "pnpm");
     writeExecutable(
       pinned,
-      `#!/bin/sh\nprintf 'pinned\\n' >> ${JSON.stringify(marker)}\nprintf '12.1.0\\n'\n`,
+      `#!/bin/sh\n[ "\${pnpm_config_pm_on_fail:-}" = ignore ] || exit 96\nprintf 'pinned\\n' >> ${JSON.stringify(marker)}\nprintf '12.1.0\\n'\n`,
     );
     const ambientEnv = {
       ...process.env,

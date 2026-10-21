@@ -234,6 +234,9 @@ export function buildBenchmarkCommandEnv(
     PATH: ambientEnv.PATH,
     TMPDIR: path.join(cacheRoot, "tmp"),
     npm_config_cache: npmCache,
+    // Both source cuts must use the benchmark's selected pnpm, even when their
+    // packageManager fields name older releases.
+    pnpm_config_pm_on_fail: "ignore",
     npm_execpath: packageManager.executable,
   };
 }

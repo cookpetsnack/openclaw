@@ -70,6 +70,7 @@ as_sut() {
     GIT_CONFIG_GLOBAL=/dev/null \
     GIT_CONFIG_SYSTEM=/dev/null \
     GIT_TERMINAL_PROMPT=0 \
+    pnpm_config_pm_on_fail=ignore \
     CI=1 \
     OPENCLAW_SKIP_CHANNELS=1 \
     OPENCLAW_SKIP_CRON=1 \
@@ -93,6 +94,7 @@ candidate_environment() {
     "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/$(id -u "$SUT_USER")/bus" \
     "PATH=/home/${SUT_USER}/.local/node_modules/.bin:/opt/node-v${NODE_VERSION}/bin:/opt/openclaw-performance:/usr/bin:/bin" \
     GIT_CONFIG_GLOBAL=/dev/null GIT_CONFIG_SYSTEM=/dev/null GIT_TERMINAL_PROMPT=0 \
+    pnpm_config_pm_on_fail=ignore \
     CI=1 OPENCLAW_SKIP_CHANNELS=1 OPENCLAW_SKIP_CRON=1
 }
 
