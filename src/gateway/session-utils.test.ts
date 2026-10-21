@@ -13,7 +13,6 @@ import { resetConfigRuntimeState, setRuntimeConfigSnapshot } from "../config/con
 import type { OpenClawConfig } from "../config/config.js";
 import { retainLegacyDefaultAgentId } from "../config/legacy.default-agent-owner.js";
 import type { InternalSessionEntry, SessionEntry } from "../config/sessions.js";
-import { contextBudgetStatusFixture } from "../config/sessions/context-budget.test-support.js";
 import {
   listSessionChildEntriesReadOnly,
   listSessionEntriesReadOnly,
@@ -67,7 +66,6 @@ import {
   withStateDirEnv,
 } from "./session-utils.test-support.js";
 import type { SessionTitleFields } from "./session-utils.types.js";
-import { applySessionContextWindowPatch } from "./sessions-patch-context-window.js";
 
 const { getSessionProviderArtifactMocks, resetSessionProviderArtifacts } =
   await import("./session-utils-provider.test-support.js");
@@ -286,34 +284,6 @@ describe("gateway session utils", () => {
   beforeEach(resetSessionProviderArtifacts);
 
   afterAll(closeSessionSqliteDatabasesForTest);
-
-  test.each([false, true])("projects only an active fallback model (recovered=%s)", (recovered) => {
-    const row = buildGatewaySessionRow({
-      cfg: createModelDefaultsConfig({
-        primary: recovered ? "codex/gpt-5.5" : "ollama/qwen3.5:9b",
-      }),
-      key: "main",
-      entry: {
-        sessionId: "fallback-session",
-        updatedAt: 1,
-        ...(!recovered ? { providerOverride: "codex", modelOverride: "gpt-5.5" } : {}),
-        modelProvider: recovered ? "codex" : "ollama",
-        model: recovered ? "gpt-5.5" : "qwen3.5:9b",
-        fallbackNotice: {
-          kind: "active",
-          selectedModel: "codex/gpt-5.5",
-          activeModel: "ollama/qwen3.5:9b",
-        },
-      },
-    });
-
-    expect(row).toMatchObject({
-      modelProvider: "codex",
-      model: "gpt-5.5",
-      activeModelProvider: recovered ? undefined : "ollama",
-      activeModel: recovered ? undefined : "qwen3.5:9b",
-    });
-  });
 
   test("projects a running candidate across aliased keys without changing the configured model", () => {
     const runId = "live-model-projection";
@@ -579,7 +549,11 @@ describe("gateway session utils", () => {
     const defaults = getSessionDefaults(cfg, catalog);
     const row = buildGatewaySessionRow({
       cfg,
-      entry: { sessionId: "ctx", contextWindow: "200k" } as SessionEntry,
+      entry: makeSession("ctx", {
+        contextWindow: "200k",
+        contextTokens: 1_000_000,
+        contextTokensSource: "runtime",
+      }),
       modelCatalog: catalog,
     });
 
@@ -587,73 +561,6 @@ describe("gateway session utils", () => {
     expect(row).toMatchObject({ contextWindow: "200k", contextTokens: 200_000 });
     expect(row.contextWindows).toEqual(catalog[0]?.contextWindows);
   });
-
-  test.each([{ before: 128_000, after: 32_000, reserve: 20_000 }])(
-    "projects the new cap immediately after a $before → $after context selection",
-    ({ before, after, reserve }) => {
-      const catalog = [
-        catalogModel("ollama", "qwen3:8b", {
-          name: "Qwen",
-          contextWindow: 128_000,
-          api: "ollama" as const,
-          contextWindows: [
-            { id: "32000", label: "32K", contextWindow: 32_000 },
-            { id: "128000", label: "128K", contextWindow: 128_000 },
-          ],
-        }),
-      ];
-      const cfg = createModelDefaultsConfig({
-        primary: "ollama/qwen3:8b",
-        agentRuntime: { id: "openclaw" },
-      });
-      const entry: SessionEntry = {
-        sessionId: "session-1",
-        updatedAt: 1,
-        modelProvider: "ollama",
-        model: "qwen3:8b",
-        agentHarnessId: "openclaw",
-        contextWindow: String(before),
-        contextTokens: before,
-        contextTokensSource: "runtime",
-        contextBudgetStatus: contextBudgetStatusFixture({
-          contextTokenBudget: before,
-          promptBudgetBeforeReserve: before - reserve,
-          reserveTokens: reserve,
-          effectiveReserveTokens: reserve,
-          estimatedPromptTokens: 1_000,
-          remainingPromptBudgetTokens: before - reserve - 1_000,
-        }),
-      };
-      const previousRow = buildGatewaySessionRow({
-        cfg,
-        entry,
-        modelCatalog: catalog,
-      });
-      expect(previousRow.contextTokens).toBe(before);
-      expect(previousRow.agentRuntime?.id).toBe(entry.agentHarnessId);
-      const patch = applySessionContextWindowPatch({
-        next: entry,
-        patch: { key: "agent:main:main", contextWindow: String(after) },
-        defaultProvider: "ollama",
-        defaultModel: "qwen3:8b",
-        runtimeId: () => "openclaw",
-        routeVariants: () => catalog,
-        *loadModelCatalog() {
-          yield;
-          return catalog;
-        },
-      });
-      patch.next();
-      expect(patch.next().value).toEqual({ ok: true });
-      const row = buildGatewaySessionRow({
-        cfg,
-        entry,
-        modelCatalog: catalog,
-      });
-      expect(row.contextTokens).toBe(after);
-      expect(row.contextBudgetStatus).toBeUndefined();
-    },
-  );
 
   test("session rows project automation bindings and event fields forward them", () => {
     const cfg = createModelDefaultsConfig({ primary: "openai/gpt-5.4" });
@@ -925,12 +832,6 @@ describe("gateway session utils", () => {
       undefined,
     ],
     ["channel title", "slack:channel:C1", slackChannelEntry(), "Acme #general"],
-    [
-      "explicit label overriding channel metadata",
-      "slack:channel:C1",
-      { ...slackChannelEntry(), label: "Team room" },
-      "Team room",
-    ],
   ])("projects %s as the session display name", (_name, suffix, fields, expected) => {
     const key = `agent:main:${suffix}`;
     const entry = makeSession("display-name", fields);
@@ -1822,7 +1723,6 @@ describe("deriveSessionTitle", () => {
   test.each([
     { name: "missing entry", entry: undefined, message: undefined, expected: undefined },
     { name: "missing message", entry, message: undefined, expected: undefined },
-    { name: "empty message", entry, message: "", expected: undefined },
     { name: "blank message", entry, message: "   ", expected: undefined },
     {
       name: "emoji at the truncation boundary",

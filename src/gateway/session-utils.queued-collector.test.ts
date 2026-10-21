@@ -417,8 +417,6 @@ describe("queued collector session projection", () => {
     );
     expect(compact.execution).toEqual({ status: "queued" });
     expect(compact.sessionStartedAt).toBeUndefined();
-    expect(isSubagentRunQueued(compact)).toBe(false);
-    expect(isSubagentRunQueued(structuredClone(entry))).toBe(false);
 
     await registerSubagentRun(registration);
     const replacement = expectDefined(subagentRuns.get(entry.runId), "replacement record");

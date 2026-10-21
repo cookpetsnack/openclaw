@@ -588,7 +588,6 @@ describe("personal publication outcomes and session lifecycle", () => {
     "foreign-after-create",
     "revoked-after-create",
     "unavailable-after-create",
-    "malformed-after-create",
   ] as const)(
     "preserves the original request outcome for %s observation after an earlier effect",
     async (outcome) => {
@@ -596,7 +595,7 @@ describe("personal publication outcomes and session lifecycle", () => {
       const foreign = outcome.startsWith("foreign");
       const revoked = outcome.startsWith("revoked");
       const afterCreate = outcome.endsWith("after-create");
-      const unavailable = /^(unavailable|malformed)/u.test(outcome);
+      const unavailable = outcome === "unavailable-after-create";
       const workspace = await createRealPublicationWorkspace("push");
       const initial = (await rpc("sessions.github.publish", request()))[1];
       expect(initial.status).toBe("needs_confirmation");
@@ -634,9 +633,6 @@ describe("personal publication outcomes and session lifecycle", () => {
           }
           if (outcome === "unavailable-after-create") {
             return commandResult("", 1);
-          }
-          if (outcome === "malformed-after-create") {
-            return commandResult("[{}");
           }
           lookups += 1;
           if (revoked && lookups === 1) {

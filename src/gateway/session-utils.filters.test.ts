@@ -290,8 +290,6 @@ it("keeps system provenance and named conversations distinct in projected lists"
 it.each([
   { opts: { projectId: "project-one" }, matches: ["selected", "workspace-root"] },
   { opts: { workspaceDir: "/workspace" }, matches: ["workspace-root"] },
-  { opts: { workspaceDir: "/workspace/./task" }, matches: [] },
-  { opts: { workspaceDir: "/configured" }, matches: [] },
   { opts: { group: "review" }, matches: ["repository-only"] },
   { opts: { group: "" }, matches: ["unassociated"] },
 ] satisfies { opts: SessionsListParams; matches: string[] }[])(

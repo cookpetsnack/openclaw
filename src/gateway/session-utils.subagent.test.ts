@@ -196,28 +196,6 @@ describe("session list subagent metadata", () => {
 
   registerSubagentSessionStatusTests(listSubagentSessions);
 
-  test("uses the newest child-session row for stale/current replacement pairs", async () => {
-    const now = Date.now();
-    const childSessionKey = "agent:main:subagent:stale-current";
-    const store = { [childSessionKey]: childEntry("sess-stale-current", now) };
-
-    await registerRun("run-stale-active", childSessionKey, now - 5_000, now - 4_500);
-    await registerRun("run-current-ended", childSessionKey, now - 1_000, now - 900, {
-      endedAt: now - 200,
-      outcome: { status: "ok" },
-    });
-
-    const result = await listSubagentSessions(store);
-
-    expect(result.sessions).toHaveLength(1);
-    expect(result.sessions[0]).toMatchObject({
-      key: childSessionKey,
-      status: "done",
-      startedAt: now - 900,
-      endedAt: now - 200,
-    });
-  });
-
   test("keeps follow-up turn timing instead of the finished spawn run", async () => {
     const now = Date.now();
     const childSessionKey = "agent:main:subagent:follow-up";

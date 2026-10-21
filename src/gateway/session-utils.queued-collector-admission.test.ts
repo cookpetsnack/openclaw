@@ -142,16 +142,14 @@ it.each([
       ) => {
         const respond = method === "agent" ? agentResponse : vi.fn();
         const request = {
+          ...requestOptions(context, method, params),
           req: { type: "req" as const, id: "native-preaccept", method },
-          params,
           respond,
-          context,
           sessionMutationCommitGuard: options?.sessionMutationCommitGuard,
           client: createSyntheticPluginRuntimeClient({
             agentRunTracking: options?.agentRunTracking,
             scopes: options?.syntheticScopes,
           }),
-          isWebchatConnect: () => false,
         };
         if (method === "agent") {
           nativeRunId = String(params.idempotencyKey);

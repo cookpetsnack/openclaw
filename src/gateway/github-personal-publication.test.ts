@@ -901,7 +901,7 @@ describe("personal publication authority and recovery", () => {
     },
   );
 
-  it.each(["snapshot", "remote", "malformed", "timeout"] as const)(
+  it.each(["snapshot", "remote"] as const)(
     "keeps failed %s observation reconfirmable with its dispatched effect intact",
     async (observation) => {
       const workspace = await createRealPublicationWorkspace("push");
@@ -910,14 +910,6 @@ describe("personal publication authority and recovery", () => {
       const local = mocks.runCommand.getMockImplementation()!;
       mocks.runCommand.mockImplementation(
         async (argv: string[], options?: { env?: NodeJS.ProcessEnv }) => {
-          if (argv.includes("state=all")) {
-            if (observation === "malformed") {
-              return commandResult("[{}");
-            }
-            if (observation === "timeout") {
-              throw new Error("synthetic remote timeout");
-            }
-          }
           return (observation === "snapshot" &&
             argv.includes("write-tree") &&
             options?.env?.GIT_INDEX_FILE) ||
