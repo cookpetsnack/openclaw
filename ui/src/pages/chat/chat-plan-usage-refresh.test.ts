@@ -52,12 +52,12 @@ it("updates the open popover after two quick runs and one SWR recheck each", asy
     { "models.authStatus": auth },
   );
   await fixture.sessions.refresh({ agentId: "main", force: true });
-  const panes = [fixture.mount(key), fixture.mount(key)];
-  for (const pane of panes) {
-    document.body.append(pane.element);
-    onTestFinished(() => pane.element.remove());
+  const pane = fixture.mount(key);
+  const panes = [pane, fixture.mount(key)];
+  for (const currentPane of panes) {
+    document.body.append(currentPane.element);
+    onTestFinished(() => currentPane.element.remove());
   }
-  const [pane] = panes;
   await Promise.all(
     panes.map(async (currentPane) => {
       await refreshPane(currentPane);
