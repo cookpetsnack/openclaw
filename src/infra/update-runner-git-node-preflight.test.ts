@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import { useAutoCleanupTempDirTracker } from "../../test/helpers/temp-dir.js";
 import * as runtimes from "../daemon/runtime-paths.js";
 import { runCommandWithTimeout } from "../process/exec.js";
-import { resolveTestNodeExecPath } from "../test-utils/node-process.js";
+import { execNodeEvalSync, resolveTestNodeExecPath } from "../test-utils/node-process.js";
 import * as executables from "./executable-path.js";
 import { prepareGitCandidateNodeRuntime } from "./update-runner-git-node-preflight.js";
 
@@ -96,7 +96,14 @@ it.each([
       { mode: 0o755 },
     );
     if (runtime === "node") {
-      setHost({ ...originalVersions, bun: undefined }, path.join(selectedBin, executable));
+      setHost(
+        {
+          ...originalVersions,
+          node: execNodeEvalSync("process.stdout.write(process.versions.node)", { timeout: 5000 }),
+          bun: undefined,
+        },
+        path.join(selectedBin, executable),
+      );
     }
     const result = await prepareGitCandidateNodeRuntime(root, {
       PATH: (selectedFirst
