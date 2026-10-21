@@ -20,6 +20,7 @@ import {
   renderFilePanelPresentation,
 } from "./chat-detail-file-presentation.ts";
 import {
+  createDetailOperationPresentation,
   detailPanelOperationLifetime,
   registerDetailPanelRetirement,
 } from "./chat-detail-panel-operation-lifetime.ts";
@@ -66,7 +67,9 @@ function DetailPanel(props: ChatDetailPanelProps, host: ChatDetailPanel) {
   let fileEditing = false;
   let fileDirty = false;
   let fileReloading = false;
+  // Plain admission also protects the dirty-editor close veto.
   let fileSaving = false;
+  const fileOperation = createDetailOperationPresentation();
   let fileSaveNotice: { kind: "conflict" } | { kind: "error"; message: string } | null = null;
 
   const htmlPreview = createFileHtmlPreview(
@@ -90,19 +93,9 @@ function DetailPanel(props: ChatDetailPanelProps, host: ChatDetailPanel) {
     syncFileEditor,
     restoreFileReadingPresentation,
     showRequestedReadingMode,
-    handlePanelClick,
-    handlePanelKeyDown,
     resetFilePresentation,
     beginEditPresentation,
-    fileSearchMatches,
-    closeFileSearch,
-    toggleFileSearch,
-    toggleFileWrap,
-    updateFileSearch,
-    moveFileSearch,
-    handleFileSearchKeydown,
-    openInEditor,
-    changeFileReadingMode,
+    ...fileActions
   } = createFilePresentationActions({
     props,
     presentation,
@@ -566,22 +559,26 @@ function DetailPanel(props: ChatDetailPanelProps, host: ChatDetailPanel) {
   }
 
   function trackFileOperation(operation: Promise<unknown>, version: number) {
-    return operation
-      .catch((cause: unknown) => {
-        if (version === fileOperationVersion) {
-          fileSaveNotice = { kind: "error", message: formatUiError(cause) };
+    const reportError = (cause: unknown) => {
+      if (version === fileOperationVersion) {
+        fileSaveNotice = { kind: "error", message: formatUiError(cause) };
+        invalidate();
+      }
+    };
+    const pending = operation.catch(reportError).finally(() => {
+      if (version === fileOperationVersion) {
+        fileSaving = false;
+        if (fileReloading) {
+          fileReloading = false;
+          fileEditor?.setEditable(fileEditing);
         }
-      })
-      .finally(() => {
-        if (version === fileOperationVersion) {
-          fileSaving = false;
-          if (fileReloading) {
-            fileReloading = false;
-            fileEditor?.setEditable(fileEditing);
-          }
-          invalidate();
-        }
-      });
+        invalidate();
+      }
+    });
+    void fileOperation
+      .observe(pending, () => isConnected() && version === fileOperationVersion)
+      .catch(reportError);
+    return pending;
   }
 
   const close = () => {
@@ -611,7 +608,11 @@ function DetailPanel(props: ChatDetailPanelProps, host: ChatDetailPanel) {
     host,
     () => previousContent,
     () => previousRuntime,
-    () => attachmentDownload.cancel(),
+    () => {
+      attachmentDownload.cancel();
+      fileOperation.retire();
+    },
+    fileAttachment.retire,
   );
   let handledFileViewRequest: FileReaderViewRequest | undefined;
   let fileViewRequestVersion = 0;
@@ -659,34 +660,26 @@ function DetailPanel(props: ChatDetailPanelProps, host: ChatDetailPanel) {
         fileEditorLoading,
         fileOperationVersion,
         fileSaveNotice,
-        fileSaving,
+        get fileSaving() {
+          return fileOperation.pending() || fileSaving;
+        },
       },
       setEditorMount: (element) => {
         editorMount = element;
       },
       actions: {
-        fileSearchMatches,
+        ...fileActions,
         currentFileText,
         retryFileEditor,
         toggleHtmlSource,
-        closeFileSearch,
         interact,
-        changeFileReadingMode,
         discardFileEdits,
         editFile,
-        moveFileSearch,
-        openInEditor,
         overwriteFile: () => startLatestFileOperation("overwrite"),
         reloadFile: () => startLatestFileOperation("reload"),
         saveFile,
-        updateFileSearch,
-        handleFileSearchKeydown,
-        toggleFileSearch,
-        toggleFileWrap,
         close,
         showRawText,
-        handlePanelClick,
-        handlePanelKeyDown,
         invalidate,
       },
     });

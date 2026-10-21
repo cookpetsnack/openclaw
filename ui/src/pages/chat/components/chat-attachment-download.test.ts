@@ -96,3 +96,32 @@ it.each(["content", "connection", "disconnect"] as const)(
     expect(downloadBlobFile).toHaveBeenCalledTimes(change === "disconnect" ? 0 : 1);
   },
 );
+
+it("keeps the replacement download pending when a retired request settles", async () => {
+  const retired = Promise.withResolvers<Blob | null>();
+  const replacement = Promise.withResolvers<Blob | null>();
+  const download = vi
+    .fn<NonNullable<AttachmentSidebarContent["download"]>>()
+    .mockReturnValueOnce(retired.promise)
+    .mockReturnValueOnce(replacement.promise);
+  const panel = await mountDownload(download);
+  downloadButton(panel).click();
+  await waitForSolid(() => expect(downloadButton(panel).disabled).toBe(true));
+
+  panel.content = { ...(panel.content as AttachmentSidebarContent), title: "replacement.zip" };
+  await panel.updateComplete;
+  await waitForSolid(() => expect(downloadButton(panel).disabled).toBe(false));
+  downloadButton(panel).click();
+  await waitForSolid(() => expect(downloadButton(panel).disabled).toBe(true));
+  expect(download).toHaveBeenCalledTimes(2);
+
+  retired.resolve(new Blob(["retired archive"]));
+  await retired.promise;
+  await waitForSolid(() => expect(downloadButton(panel).disabled).toBe(true));
+  expect(downloadBlobFile).not.toHaveBeenCalled();
+
+  const blob = new Blob(["replacement archive"]);
+  replacement.resolve(blob);
+  await waitForSolid(() => expect(downloadButton(panel).disabled).toBe(false));
+  expect(downloadBlobFile).toHaveBeenCalledExactlyOnceWith("replacement.zip", blob);
+});

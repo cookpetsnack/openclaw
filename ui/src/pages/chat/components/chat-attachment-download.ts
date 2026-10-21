@@ -1,7 +1,8 @@
-import { action, createOptimistic, createSignal, onCleanup } from "solid-js";
+import { createSignal, onCleanup } from "solid-js";
 import { t } from "../../../i18n/index.ts";
 import { downloadBlobFile } from "../../../lib/download.ts";
 import { formatUiError } from "../../../lib/format-error.ts";
+import { createDetailOperationPresentation } from "./chat-detail-panel-operation-lifetime.ts";
 import type {
   AttachmentSidebarRuntime,
   ChatDetailPanelContent,
@@ -12,29 +13,19 @@ export function createAttachmentDownload(
   runtime: () => AttachmentSidebarRuntime,
   isConnected: () => boolean,
 ) {
-  let request: { controller: AbortController; retire: () => void } | null = null;
-  const [pending, setPending] = createOptimistic(false);
+  let request: { controller: AbortController } | null = null;
+  const presentation = createDetailOperationPresentation();
   const [error, setError] = createSignal<string | null>(null, { ownedWrite: true });
   const retire = () => {
     request?.controller.abort();
-    request?.retire();
+    presentation.retire();
     request = null;
   };
   onCleanup(retire);
-  const presentDownload = action(function* (
-    currentRequest: NonNullable<typeof request>,
-    completion: Promise<void>,
-    retired: Promise<void>,
-  ) {
-    if (request === currentRequest) {
-      setPending(true);
-    }
-    yield Promise.race([completion, retired]);
-  });
 
   return {
     get pending() {
-      return pending();
+      return presentation.pending();
     },
     get error() {
       return error();
@@ -49,8 +40,7 @@ export function createAttachmentDownload(
         return;
       }
       const read = attachment.download;
-      const retired = Promise.withResolvers<void>();
-      const currentRequest = { controller: new AbortController(), retire: retired.resolve };
+      const currentRequest = { controller: new AbortController() };
       const { connectionEpoch, sessionKey, agentId } = runtime();
       request = currentRequest;
       setError(null);
@@ -87,8 +77,7 @@ export function createAttachmentDownload(
         }
       };
       const completion = download();
-      await Promise.resolve();
-      return presentDownload(currentRequest, completion, retired.promise);
+      return presentation.observe(completion, () => request === currentRequest);
     },
   };
 }
