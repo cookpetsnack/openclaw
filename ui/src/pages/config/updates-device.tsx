@@ -6,6 +6,7 @@ import {
   Errored,
   latest,
   Loading,
+  refresh,
   Show,
 } from "solid-js";
 import { deviceSettingsGroupLabelKey } from "../../app-navigation.ts";
@@ -50,6 +51,9 @@ export function DeviceUpdates(props: {
     }
     // The async receipt owns errors; this action owns only the saving affordance.
     yield completion.catch(() => {});
+    if (view.isCurrent()) {
+      yield refresh(automatic);
+    }
   });
   const changeAutomatic = async (value: boolean) => {
     const view = props.captureCommandPresentation();
