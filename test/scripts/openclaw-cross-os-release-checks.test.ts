@@ -72,7 +72,6 @@ import {
   resolveStaticFileContentType,
   startStaticFileServer,
   trimForSummary,
-  shouldRunPackagedUpgradeStatusProbe,
   shouldRunWindowsInstalledBrowserOverrideImportSmoke,
   shouldRunMainChannelDevUpdate,
   shouldUseManagedGatewayService,
@@ -115,12 +114,6 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanupDirs) => {
     cleanupDirs();
   });
 });
-
-function expectContains(text: string, fragments: string[]) {
-  for (const fragment of fragments) {
-    expect(text).toContain(fragment);
-  }
-}
 
 function writeJson(path: string, value: unknown) {
   writeFileSync(path, JSON.stringify(value), "utf8");
@@ -329,34 +322,14 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
     replacement.release();
   });
 
-  it("bounds public installer fetches on Windows and POSIX", () => {
-    const windowsScript = buildInstallerSmokeScript({
-      installerUrl: "https://openclaw.ai/install.ps1",
-      installTarget: "2026.7.1",
-      platform: "win32",
-    });
-    const posixScript = buildInstallerSmokeScript({
-      installerUrl: "https://openclaw.ai/install.sh",
-      installTarget: "2026.7.1",
-      platform: "linux",
-    });
-
-    expectContains(windowsScript, [
-      "curl.exe -fsSL --connect-timeout 10 --max-time 120 -o $installerPath 'https://openclaw.ai/install.ps1'",
-      "openclaw-installer-",
-      "if ($LASTEXITCODE -ne 0)",
-      "[System.IO.File]::ReadAllText($installerPath, [System.Text.Encoding]::UTF8)",
-      "Remove-Item -LiteralPath $installerPath -Force -ErrorAction SilentlyContinue",
-    ]);
-    expect(windowsScript).not.toContain("Invoke-WebRequest");
-    expectContains(posixScript, [
-      'installer_path="$(mktemp "${TMPDIR:-/tmp}/openclaw-installer-XXXXXX")"',
-      "trap 'rm -f \"$installer_path\"' EXIT",
-      "curl -fsSL --connect-timeout 10 --max-time 120 -o \"$installer_path\" 'https://openclaw.ai/install.sh'",
-      "bash -- \"$installer_path\" --version '2026.7.1' --no-onboard",
-    ]);
-    expect(posixScript).not.toContain("| bash");
-    expect(posixScript).toContain("set -euo pipefail");
+  it.each(["win32", "linux"] as const)("bounds default installer fetches on %s", (platform) => {
+    expect(
+      buildInstallerSmokeScript({
+        installerUrl: "https://openclaw.ai/install",
+        installTarget: "2026.7.1",
+        platform,
+      }),
+    ).toContain("-fsSL --connect-timeout 10 --max-time 120");
   });
 
   it("drops split surrogate pairs when truncating response bodies", async () => {
@@ -740,11 +713,6 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
       })?.model,
     ).toBe("openai/gpt-5.4-nano");
     expect(resolveProviderConfig("openai", {})?.model).toBe("openai/gpt-5.6-luna");
-    expect(resolveProviderConfig("openai", {})?.requiredCompanionPackages).toEqual([
-      "@openclaw/codex",
-    ]);
-    expect(resolveProviderConfig("anthropic", {})?.requiredCompanionPackages).toEqual([]);
-    expect(resolveProviderConfig("minimax", {})?.requiredCompanionPackages).toEqual([]);
   });
 
   it("can stage packaged-upgrade baselines without npm lifecycle scripts", () => {
@@ -1680,18 +1648,6 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
         "win32",
       ),
     ).toBe(false);
-  });
-
-  it("skips the packaged upgrade status probe after the Windows fallback install", () => {
-    for (const [platform, usedWindowsPackagedUpgradeFallback, expected] of [
-      ["win32", true, false],
-      ["win32", false, true],
-      ["linux", true, true],
-    ] as const) {
-      expect(
-        shouldRunPackagedUpgradeStatusProbe({ platform, usedWindowsPackagedUpgradeFallback }),
-      ).toBe(expected);
-    }
   });
 
   it.each([

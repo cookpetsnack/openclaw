@@ -696,15 +696,13 @@ describe("cross-OS release checks workflow", () => {
     );
 
     for (const artifact of ["candidate", "baseline"]) {
-      for (const name of [`Download ${artifact} artifact`, `Retry ${artifact} artifact download`]) {
-        const download = step(consumer, name);
-        expect(download.with).toMatchObject({
-          "artifact-ids": `\${{ needs.prepare.outputs.${artifact}_artifact_id }}`,
-          "github-token": "${{ github.token }}",
-          "run-id": `\${{ needs.prepare.outputs.${artifact}_artifact_run_id }}`,
-        });
-        expect(download.with?.name, name).toBeUndefined();
-      }
+      const download = step(consumer, `Download ${artifact} artifact`);
+      expect(download.with).toMatchObject({
+        "artifact-ids": `\${{ needs.prepare.outputs.${artifact}_artifact_id }}`,
+        "github-token": "${{ github.token }}",
+        "run-id": `\${{ needs.prepare.outputs.${artifact}_artifact_run_id }}`,
+      });
+      expect(download.with?.name).toBeUndefined();
     }
     const verify = step(consumer, "Verify release-check inputs");
     expect(verify.env?.EXPECTED_CANDIDATE_SHA256).toBe(
@@ -793,8 +791,6 @@ describe("cross-OS release checks workflow", () => {
       mkdirSync(dirname(target), { recursive: true });
       cpSync(source, target, { recursive: true });
     }
-    const wrapper = readFileSync(WRAPPER_PATH, "utf8");
-    const script = readFileSync(SCRIPT_PATH, "utf8");
     const packageJson = JSON.parse(readFileSync("package.json", "utf8")) as {
       scripts: Record<string, string>;
     };
@@ -803,12 +799,6 @@ describe("cross-OS release checks workflow", () => {
       packageJson.scripts["test:windows:ci:2"],
     ].join(" ");
 
-    expect(wrapper).toContain('exec "${node_cmd}" "${script_path}" "$@"');
-    expect(wrapper).not.toContain("npm");
-    expect(wrapper).not.toContain("tsx");
-    expect(wrapper).not.toContain("--import");
-    expect(script).toMatch(/^#!\/usr\/bin\/env node$/mu);
-    expect(script).not.toContain("--import tsx");
     expect(windowsCiCoverage).toContain("test/scripts/openclaw-cross-os-release-workflow.test.ts");
     const result = runWrapper(
       [

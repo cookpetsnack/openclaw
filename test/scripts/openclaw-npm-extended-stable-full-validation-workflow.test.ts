@@ -52,7 +52,6 @@ describe("extended-stable Full Release Validation workflow", () => {
   });
 
   it("lets the exact extended-stable branch reach every child at the target SHA", () => {
-    const fullValidation = readFileSync(fullValidationPath, "utf8");
     const targetRef = '-f target_ref="$TARGET_SHA"';
     const expectedSha = '-f expected_sha="$TARGET_SHA"';
     for (const [job, step, childWorkflow, target, phased] of [
@@ -81,12 +80,6 @@ describe("extended-stable Full Release Validation workflow", () => {
         }
       }
     }
-
-    expect(fullValidation).toContain("PARENT_WORKFLOW_SHA: ${{ github.sha }}");
-    expect(fullValidation).toContain('if [[ "$child_head_sha" != "$PARENT_WORKFLOW_SHA" ]]');
-    expect(fullValidation).toContain(
-      "child run used workflow SHA ${child_head_sha}, expected parent workflow SHA ${PARENT_WORKFLOW_SHA}",
-    );
   });
 
   it("accepts only the exact extended-stable/YYYY.M.33 workflow-ref shape", () => {

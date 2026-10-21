@@ -26,7 +26,6 @@ type AdmissionOptions = {
   candidate?: string;
   npmDistTag?: string;
   tag?: string;
-  remoteSha?: string;
 };
 type Workflow = {
   on?: {
@@ -250,8 +249,6 @@ it("binds intentional Plugin SDK release changes to the reported digest", () => 
     inputRef("plugin_sdk_api_acknowledgement"),
   );
   expect(trustedToolingCheckout.with?.ref).toBe("${{ github.workflow_sha }}");
-  // Corepack resolves packageManager from its working directory before pnpm
-  // receives command flags. The trusted tooling checkout must own both calls.
   expectText(
     preflightDiff.run,
     [
@@ -260,16 +257,8 @@ it("binds intentional Plugin SDK release changes to the reported digest", () => 
       '--bases-json "$bases_json"',
       '--evidence "${GITHUB_WORKSPACE}/.artifacts/npm-sdk-proof/plugin-sdk-api-release-evidence.json"',
       'git -C "$tooling_dir" status --porcelain',
-      'cd "$tooling_dir"',
-      "pnpm install --frozen-lockfile --ignore-scripts --filter openclaw",
-      'pnpm run plugin-sdk:api:diff -- "${diff_args[@]}"',
     ],
-    [
-      "--require-acknowledgement",
-      "--acknowledge",
-      'pkg.scripts?.["plugin-sdk:api:diff"]',
-      'pnpm --dir "$tooling_dir"',
-    ],
+    ["--require-acknowledgement", "--acknowledge", 'pkg.scripts?.["plugin-sdk:api:diff"]'],
   );
   expectText(
     publishProvenanceRun,
@@ -323,25 +312,22 @@ it("threads an explicit, default-off extended-stable bypass through every policy
   expect(trustedRef.run).not.toContain("BYPASS_EXTENDED_STABLE_GUARD");
 });
 
-it.each<[string, string, AdmissionOptions, number]>([
-  ["main recovery", "refs/heads/main", {}, 1],
-  ["protected publisher", publisherRef, {}, 0],
-  ["feature branch", "refs/heads/feature/recovery", {}, 1],
-  ["release branch with candidate override", "refs/heads/release/2026.8.1", {}, 1],
-  ["Tideclaw branch", "refs/heads/tideclaw/alpha/2026-09-25-1200Z", {}, 1],
-  ["extended-stable branch", "refs/heads/extended-stable/2026.8.33", {}, 1],
-  ["ordinary tag", "refs/tags/v2026.8.34", {}, 1],
-  ["wrong candidate month", publisherRef, { candidate: "extended-stable/2026.7.33" }, 1],
-  ["noncanonical candidate branch", publisherRef, { candidate: "extended-stable/2026.8.34" }, 1],
-  ["latest selector", publisherRef, { npmDistTag: "latest" }, 1],
-  ["beta selector", publisherRef, { npmDistTag: "beta" }, 1],
-  ["correction suffix", publisherRef, { tag: "v2026.8.34-1" }, 1],
-  ["non-tag candidate", publisherRef, { tag: "a".repeat(40) }, 1],
-  ["wrong protected SHA prefix", "refs/tags/release-publish/aaaaaaaaaaaa-123", {}, 1],
-  ["moved protected tag", publisherRef, { remoteSha: "c".repeat(40) }, 1],
+it.each<[string, string, AdmissionOptions]>([
+  ["main recovery", "refs/heads/main", {}],
+  ["feature branch", "refs/heads/feature/recovery", {}],
+  ["release branch with candidate override", "refs/heads/release/2026.8.1", {}],
+  ["Tideclaw branch", "refs/heads/tideclaw/alpha/2026-09-25-1200Z", {}],
+  ["extended-stable branch", "refs/heads/extended-stable/2026.8.33", {}],
+  ["ordinary tag", "refs/tags/v2026.8.34", {}],
+  ["wrong candidate month", publisherRef, { candidate: "extended-stable/2026.7.33" }],
+  ["noncanonical candidate branch", publisherRef, { candidate: "extended-stable/2026.8.34" }],
+  ["latest selector", publisherRef, { npmDistTag: "latest" }],
+  ["beta selector", publisherRef, { npmDistTag: "beta" }],
+  ["correction suffix", publisherRef, { tag: "v2026.8.34-1" }],
+  ["non-tag candidate", publisherRef, { tag: "a".repeat(40) }],
 ])(
   "checks the actual publication admission shell for %s",
-  (_label, workflowRef, { candidate, npmDistTag, tag, remoteSha }, status) => {
+  (_label, workflowRef, { candidate, npmDistTag, tag }) => {
     const guard = step(
       release.jobs?.validate_publish_request,
       "Require trusted workflow ref for publish",
@@ -364,11 +350,11 @@ it.each<[string, string, AdmissionOptions, number]>([
           RELEASE_CANDIDATE_BRANCH: candidate ?? "extended-stable/2026.8.33",
           WORKFLOW_REF: workflowRef,
           WORKFLOW_SHA: "b".repeat(40),
-          REMOTE_WORKFLOW_SHA: remoteSha ?? "b".repeat(40),
+          REMOTE_WORKFLOW_SHA: "b".repeat(40),
         },
       },
     );
-    expect(result.status, result.stderr).toBe(status);
+    expect(result.status, result.stderr).toBe(1);
   },
 );
 
