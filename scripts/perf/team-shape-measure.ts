@@ -234,13 +234,16 @@ if (isMainThread) {
     }
   }, { includeTrusted: ['gateway.rpc', 'gateway.main_thread.stall'] });
   process.on('message', async message => {
-    if (message?.channel === 'list-rpc-capture' && message.action === 'arm') { hook.enable(); return; }
-    if (message?.channel !== 'openclaw-gateway-bench-profile' || !['cpu', 'heap'].includes(message.kind)) return;
-    if (message.action === 'start') {
+    if (message?.channel === 'list-rpc-capture' && message.action === 'arm') {
+      await waitForDiagnosticEventsDrained();
       rows = []; rowWork = []; namedStalls = []; callbackStarts = [];
       callbacks = { count: 0, maxMs: 0, overOneSecond: 0 };
       turns = { count: 0, maxMs: 0, overOneSecond: 0 };
+      hook.enable();
+      process.send({ channel: 'list-rpc-capture', action: 'armed' });
+      return;
     }
+    if (message?.channel !== 'openclaw-gateway-bench-profile' || !['cpu', 'heap'].includes(message.kind)) return;
     if (message.action === 'stop') {
       hook.disable();
       clearImmediate(pendingProbe);
@@ -406,9 +409,31 @@ if (isMainThread) {
       let mutations = 0;
       await controlGatewayProfile(child, kind, "start", profilePath);
       await new Promise<void>((resolve, reject) => {
-        child.send({ channel: "list-rpc-capture", action: "arm" }, (error) =>
-          error ? reject(error) : resolve(),
-        );
+        const finish = (error?: Error) => {
+          clearTimeout(timer);
+          child.off("message", listener);
+          if (error) {
+            reject(error);
+          } else {
+            resolve();
+          }
+        };
+        const listener = (message: unknown) => {
+          if (
+            isRecord(message) &&
+            message.channel === "list-rpc-capture" &&
+            message.action === "armed"
+          ) {
+            finish();
+          }
+        };
+        const timer = setTimeout(() => finish(new Error("RPC capture arm timed out")), 30_000);
+        child.on("message", listener);
+        child.send({ channel: "list-rpc-capture", action: "arm" }, (error) => {
+          if (error) {
+            finish(error);
+          }
+        });
       });
       const before = await readGatewayCpuUsage(child);
       for (let round = 0; round < samples; round++) {
@@ -495,6 +520,15 @@ if (isMainThread) {
       });
       await controlGatewayProfile(child, kind, "stop", profilePath);
       const rpcPhases = await capture;
+      writeFileSync(
+        path.join(output, `prepared-rows.${kind}.capture.json`),
+        JSON.stringify(rpcPhases),
+      );
+      const capturedHandlers =
+        isRecord(rpcPhases) && Array.isArray(rpcPhases.rows)
+          ? rpcPhases.rows.filter((event: unknown) => isRecord(event) && event.phase === "handler")
+              .length
+          : 0;
       const profile =
         kind === "cpu" ? readGatewayCpuProfile(profilePath) : readGatewayHeapProfile(profilePath);
       if (
@@ -502,13 +536,11 @@ if (isMainThread) {
         profile.diagnostics.collectionErrors ||
         profile.diagnostics.droppedEvents ||
         profile.diagnostics.droppedHistogramSamples ||
-        !isRecord(rpcPhases) ||
-        !Array.isArray(rpcPhases.rows) ||
-        rpcPhases.rows.filter((event: unknown) => isRecord(event) && event.phase === "handler")
-          .length !==
-          requestCount + mutations
+        capturedHandlers !== requestCount + mutations
       ) {
-        throw new Error("Incomplete diagnostic capture");
+        throw new Error(
+          `Incomplete diagnostic capture: ${capturedHandlers}/${requestCount + mutations} handlers; see ${output}`,
+        );
       }
       const result = {
         variant: "prepared-rows",
