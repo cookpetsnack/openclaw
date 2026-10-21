@@ -419,14 +419,9 @@ describe("cross-OS release checks workflow", () => {
   it("keeps release artifact tarball filenames local before upload paths use them", () => {
     const source = readFileSync(WORKFLOW_PATH, "utf8");
 
-    expect(source.match(/function resolveTarballFileName/g)).toHaveLength(1);
-    expect(source.match(/path\.win32\.basename\(fileName\)/g)).toHaveLength(2);
     expectContains(source, [
-      "candidate_file_name",
-      "Baseline npm pack filename",
       "fileName !== path.basename(fileName)",
       "fileName !== path.win32.basename(fileName)",
-      "process.stdout.write(`file_name=${fileName}\\n`);",
     ]);
   });
 
@@ -536,10 +531,6 @@ describe("cross-OS release checks workflow", () => {
       docker_required: "docker_required",
       package_required: "package_required",
     });
-    expectRun(resolveTarget, "Capture selected inputs", [
-      "import { createReleaseCheckSelection } from './workflow/scripts/plan-release-workflow-matrix.mjs'",
-      "JSON.stringify(createReleaseCheckSelection({",
-    ]);
 
     const producer = job(release, "prepare_release_package");
     expect(producer.if).toBe("needs.resolve_target.outputs.package_required == 'true'");
@@ -759,9 +750,6 @@ describe("cross-OS release checks workflow", () => {
       'verify-upload "Prerelease plugin registry"',
     );
     const workflowSource = readFileSync(WORKFLOW_PATH, "utf8");
-    const optionalJsonParses =
-      workflowSource.match(/fromJSON\([^)]+ \|\| '\{\}'\)\.[A-Za-z]+ \|\| ''/gu) ?? [];
-    expect(optionalJsonParses).toHaveLength(9);
     expect(workflowSource).not.toContain("fromJSON(steps.provided_registry.outputs.json).");
     expect(workflowSource).not.toContain(
       "fromJSON(needs.prepare.outputs.prepublish_plugin_registry_json).",

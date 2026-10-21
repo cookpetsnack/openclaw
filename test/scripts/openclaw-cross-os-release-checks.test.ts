@@ -118,6 +118,33 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanupDirs) => {
 function writeJson(path: string, value: unknown) {
   writeFileSync(path, JSON.stringify(value), "utf8");
 }
+
+function descendantProgram(stubborn = false, logSentinel = false) {
+  const childScript = `${stubborn ? "process.on('SIGTERM', () => {}); " : ""}setInterval(() => {}, 1000); process.send('ready');`;
+  const indent = logSentinel ? "  " : "";
+  return [
+    "import { spawn } from 'node:child_process';",
+    "import fs from 'node:fs';",
+    fixtureReceiptClientSource(receipts.endpoint),
+    `const child = spawn(process.execPath, ['-e', ${JSON.stringify(childScript)}], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });`,
+    "child.once('message', () => {",
+    ...(logSentinel ? ["process.stdout.write('signal cleanup log sentinel\\n', () => {"] : []),
+    `${indent}fs.writeFileSync(process.env.OPENCLAW_TEST_CHILD_PID, String(child.pid));`,
+    `${indent}sendReceipt(process.env.OPENCLAW_TEST_CHILD_PID, 'ready');`,
+    `${indent}child.disconnect();`,
+    ...(logSentinel ? ["});"] : []),
+    "});",
+    "setInterval(() => {}, 1000);",
+  ].join("");
+}
+
+function killRecordedDescendant(pidPath: string, pid?: number) {
+  const recordedPid =
+    pid ?? (existsSync(pidPath) ? Number.parseInt(readFileSync(pidPath, "utf8"), 10) : 0);
+  if (recordedPid && isProcessAlive(recordedPid)) {
+    process.kill(recordedPid, "SIGKILL");
+  }
+}
 let receipts: FixtureReceiptChannel;
 beforeAll(async () => {
   receipts = await openFixtureReceiptChannel();
@@ -192,15 +219,39 @@ async function captureCommand(script: string, maxOutputBytes: number) {
   return { ...result, log: readFileSync(logPath, "utf8") };
 }
 
-function createGatewayHandleFixture(params: {
-  dir: string;
-  name: string;
-  beforeLaunch?: string;
-  afterLaunch?: string;
-  appendOnWaitForClose?: string;
-  exited: boolean;
-}) {
-  const logPath = join(params.dir, `${params.name}.log`);
+async function withStaticArtifact(
+  payload: Buffer,
+  run: (
+    server: Awaited<ReturnType<typeof startStaticFileServer>>,
+    logPath: string,
+  ) => Promise<void>,
+  fileName = "openclaw-2026.4.14.tgz",
+  ignoreCleanupError = true,
+) {
+  const dir = tempDirs.make("openclaw-cross-os-static-server-");
+  const filePath = join(dir, fileName);
+  const logPath = join(dir, "server.log");
+  writeFileSync(filePath, payload);
+  const server = await startStaticFileServer({ filePath, logPath });
+  try {
+    await run(server, logPath);
+  } finally {
+    const close = server.close();
+    await (ignoreCleanupError ? close.catch(() => {}) : close);
+  }
+}
+
+function createGatewayHandleFixture(
+  dir: string,
+  name: string,
+  params: {
+    beforeLaunch?: string;
+    afterLaunch?: string;
+    appendOnWaitForClose?: string;
+    exited?: boolean;
+  } = {},
+) {
+  const logPath = join(dir, `${name}.log`);
   const beforeLaunch = params.beforeLaunch ?? "";
   writeFileSync(logPath, beforeLaunch);
   if (params.afterLaunch) {
@@ -458,9 +509,7 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
       const dir = tempDirs.make("openclaw-cross-os-gateway-restart-");
       const refusal =
         "OpenClaw plugin migration inputs changed during startup convergence; refusing to report the gateway ready.\n";
-      const first = createGatewayHandleFixture({
-        dir,
-        name: "first",
+      const first = createGatewayHandleFixture(dir, "first", {
         beforeLaunch: scenario === "stale" ? refusal : "",
         appendOnWaitForClose: scenario === "recovered" ? refusal : "",
         afterLaunch:
@@ -471,9 +520,7 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
               : refusal,
         exited: scenario !== "live",
       });
-      const second = createGatewayHandleFixture({
-        dir,
-        name: "second",
+      const second = createGatewayHandleFixture(dir, "second", {
         afterLaunch: refusal,
         exited: scenario === "repeated",
       });
@@ -511,16 +558,8 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
 
   it("routes the Discord manual relaunch through the bounded retry wait", async () => {
     const dir = tempDirs.make("openclaw-cross-os-discord-gateway-");
-    const previous = createGatewayHandleFixture({
-      dir,
-      name: "previous",
-      exited: false,
-    });
-    const started = createGatewayHandleFixture({
-      dir,
-      name: "started",
-      exited: false,
-    });
+    const previous = createGatewayHandleFixture(dir, "previous");
+    const started = createGatewayHandleFixture(dir, "started");
     const lane = {
       name: "installer-fresh",
       rootDir: dir,
@@ -584,19 +623,13 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
   );
 
   it("rejects malformed cross-OS positive integer environment values", () => {
-    expect(parsePositiveIntegerEnv("OPENCLAW_CROSS_OS_COMMAND_HEARTBEAT_SECONDS", 60, {})).toBe(60);
-    expect(
-      parsePositiveIntegerEnv("OPENCLAW_CROSS_OS_COMMAND_HEARTBEAT_SECONDS", 60, {
-        OPENCLAW_CROSS_OS_COMMAND_HEARTBEAT_SECONDS: "25",
-      }),
-    ).toBe(25);
-
+    const key = "OPENCLAW_CROSS_OS_COMMAND_HEARTBEAT_SECONDS";
+    const parse = (raw?: string) =>
+      parsePositiveIntegerEnv(key, 60, raw === undefined ? {} : { [key]: raw });
+    expect(parse()).toBe(60);
+    expect(parse("25")).toBe(25);
     for (const raw of ["1e3", "25ms", "1.5", "0", "-1", String(Number.MAX_SAFE_INTEGER + 1)]) {
-      expect(() =>
-        parsePositiveIntegerEnv("OPENCLAW_CROSS_OS_COMMAND_HEARTBEAT_SECONDS", 60, {
-          OPENCLAW_CROSS_OS_COMMAND_HEARTBEAT_SECONDS: raw,
-        }),
-      ).toThrow("OPENCLAW_CROSS_OS_COMMAND_HEARTBEAT_SECONDS must be a positive integer");
+      expect(() => parse(raw)).toThrow(`${key} must be a positive integer`);
     }
   });
 
@@ -716,16 +749,11 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
   });
 
   it("can stage packaged-upgrade baselines without npm lifecycle scripts", () => {
-    expect(buildNpmGlobalInstallArgs("openclaw@2026.5.2", { ignoreScripts: true })).toEqual([
-      "install",
-      "-g",
-      "openclaw@2026.5.2",
-      "--omit=dev",
-      "--no-fund",
-      "--no-audit",
-      "--ignore-scripts",
-      "--loglevel=notice",
-    ]);
+    expect(buildNpmGlobalInstallArgs("openclaw@2026.5.2", { ignoreScripts: true })).toEqual(
+      "install -g openclaw@2026.5.2 --omit=dev --no-fund --no-audit --ignore-scripts --loglevel=notice".split(
+        " ",
+      ),
+    );
   });
 
   it("rejects unsafe pnpm pack destinations", () => {
@@ -972,40 +1000,28 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
   ])(
     "streams release artifacts from the static file server: $fileName",
     async ({ fileName, requestPath }) => {
-      const dir = tempDirs.make("openclaw-cross-os-static-server-");
-      const filePath = join(dir, fileName);
-      const logPath = join(dir, "server.log");
-      let server: Awaited<ReturnType<typeof startStaticFileServer>> | undefined;
+      const payload = Buffer.from(`artifact-head\n${"x".repeat(1024 * 1024)}\nartifact-tail`);
+      await withStaticArtifact(
+        payload,
+        async (server, logPath) => {
+          const response = await fetch(server.url);
+          const body = Buffer.from(await response.arrayBuffer());
 
-      try {
-        const payload = Buffer.from(`artifact-head\n${"x".repeat(1024 * 1024)}\nartifact-tail`);
-        writeFileSync(filePath, payload);
-
-        server = await startStaticFileServer({ filePath, logPath });
-        const response = await fetch(server.url);
-        const body = Buffer.from(await response.arrayBuffer());
-
-        expect(response.status).toBe(200);
-        expect(response.headers.get("content-length")).toBe(String(payload.length));
-        expect(response.headers.get("content-type")).toBe("application/octet-stream");
-        expect(body.equals(payload)).toBe(true);
-        await server.close();
-        expect(readFileSync(logPath, "utf8")).toContain(`GET ${requestPath}`);
-      } finally {
-        await server?.close();
-      }
+          expect(response.status).toBe(200);
+          expect(response.headers.get("content-length")).toBe(String(payload.length));
+          expect(response.headers.get("content-type")).toBe("application/octet-stream");
+          expect(body.equals(payload)).toBe(true);
+          await server.close();
+          expect(readFileSync(logPath, "utf8")).toContain(`GET ${requestPath}`);
+        },
+        fileName,
+        false,
+      );
     },
   );
 
   it("closes static release artifact sockets left by aborted clients", async () => {
-    const dir = tempDirs.make("openclaw-cross-os-static-server-close-");
-    const filePath = join(dir, "openclaw-2026.4.14.tgz");
-    const logPath = join(dir, "server.log");
-    let server: Awaited<ReturnType<typeof startStaticFileServer>> | undefined;
-
-    try {
-      writeFileSync(filePath, Buffer.alloc(1024 * 1024, "x"));
-      server = await startStaticFileServer({ filePath, logPath });
+    await withStaticArtifact(Buffer.alloc(1024 * 1024, "x"), async (server) => {
       const url = new URL(server.url);
       const socket = createNetConnection(Number(url.port), url.hostname);
       await new Promise<void>((resolve, reject) => {
@@ -1030,20 +1046,11 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
           throw new Error("socket close timed out");
         }),
       ]);
-    } finally {
-      await server?.close().catch(() => {});
-    }
+    });
   });
 
   it("flushes static release artifact logs before close resolves", async () => {
-    const dir = tempDirs.make("openclaw-cross-os-static-server-log-flush-");
-    const filePath = join(dir, "openclaw-2026.4.14.tgz");
-    const logPath = join(dir, "server.log");
-    let server: Awaited<ReturnType<typeof startStaticFileServer>> | undefined;
-
-    try {
-      writeFileSync(filePath, Buffer.alloc(128, "x"));
-      server = await startStaticFileServer({ filePath, logPath });
+    await withStaticArtifact(Buffer.alloc(128, "x"), async (server, logPath) => {
       const marker = `flush-${"x".repeat(512)}-done`;
 
       for (let index = 0; index < 8; index += 1) {
@@ -1051,12 +1058,8 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
         await response.text();
       }
       await server.close();
-      server = undefined;
-
       expect(readFileSync(logPath, "utf8")).toContain(`${marker}-7`);
-    } finally {
-      await server?.close().catch(() => {});
-    }
+    });
   });
 
   it("does not preload static release artifacts before serving them", () => {
@@ -1098,25 +1101,11 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
         gatewayPort: 34111,
         skipHealth: true,
       }),
-    ).toEqual([
-      "onboard",
-      "--non-interactive",
-      "--mode",
-      "local",
-      "--auth-choice",
-      "openai-api-key",
-      "--secret-input-mode",
-      "ref",
-      "--gateway-port",
-      "34111",
-      "--gateway-bind",
-      "loopback",
-      "--skip-skills",
-      "--skip-bootstrap",
-      "--accept-risk",
-      "--json",
-      "--skip-health",
-    ]);
+    ).toEqual(
+      "onboard --non-interactive --mode local --auth-choice openai-api-key --secret-input-mode ref --gateway-port 34111 --gateway-bind loopback --skip-skills --skip-bootstrap --accept-risk --json --skip-health".split(
+        " ",
+      ),
+    );
   });
 
   it("runs the installed browser override import smoke only on native Windows", () => {
@@ -1281,19 +1270,7 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
       let releaseAndWait = () => command;
       try {
         const logPath = join(dir, "timeout.log");
-        const childScript = "setInterval(() => {}, 1000); process.send('ready');";
-        const parentScript = [
-          "import { spawn } from 'node:child_process';",
-          "import fs from 'node:fs';",
-          fixtureReceiptClientSource(receipts.endpoint),
-          `const child = spawn(process.execPath, ['-e', ${JSON.stringify(childScript)}], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });`,
-          "child.once('message', () => {",
-          "fs.writeFileSync(process.env.OPENCLAW_TEST_CHILD_PID, String(child.pid));",
-          "sendReceipt(process.env.OPENCLAW_TEST_CHILD_PID, 'ready');",
-          "child.disconnect();",
-          "});",
-          "setInterval(() => {}, 1000);",
-        ].join("");
+        const parentScript = descendantProgram();
 
         releaseAndWait = startProcessWatchdogFixture(() => {
           command = runCommand(process.execPath, ["--input-type=module", "-e", parentScript], {
@@ -1313,12 +1290,7 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
         expect(readFileSync(logPath, "utf8")).toContain("timeout command=");
       } finally {
         await releaseAndWait().catch(() => {});
-        const childPid = existsSync(childPidPath)
-          ? Number.parseInt(readFileSync(childPidPath, "utf8"), 10)
-          : 0;
-        if (childPid && isProcessAlive(childPid)) {
-          process.kill(childPid, "SIGKILL");
-        }
+        killRecordedDescendant(childPidPath);
       }
     }));
 
@@ -1340,23 +1312,7 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
       let completion: ReturnType<typeof observeExit> | undefined;
 
       try {
-        const childScript = stubborn
-          ? "process.on('SIGTERM', () => {}); setInterval(() => {}, 1000); process.send('ready');"
-          : "setInterval(() => {}, 1000); process.send('ready');";
-        const parentScript = [
-          "import { spawn } from 'node:child_process';",
-          "import fs from 'node:fs';",
-          fixtureReceiptClientSource(receipts.endpoint),
-          `const child = spawn(process.execPath, ['-e', ${JSON.stringify(childScript)}], { stdio: ['ignore', 'ignore', 'ignore', 'ipc'] });`,
-          "child.once('message', () => {",
-          "process.stdout.write('signal cleanup log sentinel\\n', () => {",
-          "  fs.writeFileSync(process.env.OPENCLAW_TEST_CHILD_PID, String(child.pid));",
-          "  sendReceipt(process.env.OPENCLAW_TEST_CHILD_PID, 'ready');",
-          "  child.disconnect();",
-          "});",
-          "});",
-          "setInterval(() => {}, 1000);",
-        ].join("");
+        const parentScript = descendantProgram(stubborn, true);
         const runnerScript = [
           `import { runCommand } from ${JSON.stringify(scriptUrl)};`,
           `await runCommand(process.execPath, ['--input-type=module', '-e', ${JSON.stringify(parentScript)}], {`,
@@ -1399,12 +1355,7 @@ describe("scripts/openclaw-cross-os-release-checks", () => {
           runner.kill("SIGTERM");
         }
         await completion?.catch(() => {});
-        childPid ??= existsSync(childPidPath)
-          ? Number.parseInt(readFileSync(childPidPath, "utf8"), 10)
-          : undefined;
-        if (childPid !== undefined && isProcessAlive(childPid)) {
-          process.kill(childPid, "SIGKILL");
-        }
+        killRecordedDescendant(childPidPath, childPid);
       }
     }),
   );
