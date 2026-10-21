@@ -54,7 +54,11 @@ export const detailPanelOperationLifetime = {
     }
   },
   disconnected(host: ChatDetailPanel) {
-    retireOperations.get(host)?.disconnect();
+    queueMicrotask(() => {
+      if (!host.isConnected) {
+        retireOperations.get(host)?.disconnect();
+      }
+    });
   },
 };
 

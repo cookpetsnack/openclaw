@@ -84,3 +84,70 @@ it.each(["content", "destination"] as const)(
     expect(balance).toBe(0);
   },
 );
+
+it("keeps a held native transfer when the detail panel is reparented within the same turn", async () => {
+  const held = createDeferredCore<SessionFileDownload | null>();
+  const fetcher = vi.fn(async () => new Response("Moved panel bytes"));
+  vi.stubGlobal("fetch", fetcher);
+  const attachments: ChatAttachment[] = [];
+  let balance = 0;
+  let signal: AbortSignal | undefined;
+  const panel = document.createElement("openclaw-chat-detail-panel");
+  panel.attachmentRuntime = { connectionEpoch: 1 };
+  panel.attachmentChat = createComposerProps({
+    getAttachments: () => attachments,
+    onAttachmentsChange: (next) => {
+      attachments.splice(0, attachments.length, ...next);
+    },
+    onPendingReadsChange: (delta) => {
+      balance += delta;
+    },
+  });
+  panel.content = {
+    kind: "markdown",
+    content: "Synthetic movable preview",
+    fileDownload: {
+      path: "notes.md",
+      name: "notes.md",
+      download: (nextSignal) => {
+        signal = nextSignal;
+        return held.promise;
+      },
+    },
+  };
+  const container = createChatSidebarContainer();
+  container.append(panel);
+  document.body.append(container);
+  await panel.updateComplete;
+  await waitForSolid(() =>
+    expect(panel.querySelector('[aria-label="More file actions"]')).not.toBeNull(),
+  );
+  panel.querySelector<HTMLButtonElement>('[aria-label="More file actions"]')!.click();
+  let attach: HTMLElement | undefined;
+  await waitForSolid(() => {
+    attach = Array.from(document.querySelectorAll<HTMLElement>('[role="menuitem"]')).find((item) =>
+      item.textContent?.includes("Attach to session"),
+    );
+    expect(attach).toBeDefined();
+  });
+  attach!.click();
+  expect(balance).toBe(1);
+  await Promise.resolve();
+
+  const destination = document.createElement("section");
+  container.append(destination);
+  destination.append(panel);
+  await panel.updateComplete;
+  expect(signal?.aborted).toBe(false);
+  expect(balance).toBe(1);
+
+  held.resolve({
+    filename: "notes.md",
+    url: "/api/artifacts/download/synthetic-notes/synthetic-ticket",
+  });
+  await waitForSolid(() => {
+    expect(attachments).toHaveLength(1);
+    expect(balance).toBe(0);
+  });
+  expect(fetcher).toHaveBeenCalledOnce();
+});
