@@ -19,7 +19,8 @@ import { PanelLoadingSkeleton } from "../../../components/solid/panel-loading-sk
 import { useScrollState } from "../../../components/solid/scroll-state.ts";
 import { SessionOwnerChip } from "../../../components/solid/session-owner-chip.tsx";
 import { StrokeIcon } from "../../../components/solid/stroke-icon.tsx";
-import { t } from "../../../lib/reactive/i18n.ts";
+import { registerChatSessionEnglish } from "../../../i18n/locales/en-chat-session.ts";
+import { registerEnglishCatalog, t } from "../../../lib/reactive/i18n.ts";
 import {
   type ChatSessionSharingProps,
   VISIBILITY_LABEL_KEYS,
@@ -29,6 +30,8 @@ import {
   ChatSessionSharingModeIcon,
   projectChatSessionSharingRoster,
 } from "./chat-session-sharing-shared.tsx";
+
+registerEnglishCatalog(registerChatSessionEnglish);
 
 export * from "./chat-session-sharing-shared.tsx";
 export { useChatSessionSharingMenu } from "./chat-session-sharing-menu.tsx";
@@ -294,6 +297,7 @@ function useDesktopSharing(props: ChatSessionSharingProps, controls: MenuControl
   const showPermissions = () =>
     props.membersAvailable !== false &&
     (!result() || props.state?.loading || Boolean(props.state?.error) || people().length > 0);
+  const permissionItems = () => (showPermissions() ? rosterItems()().map((item) => item()) : []);
   // The observer and its ref share the mounted permissions subtree's lifetime.
   const SharingPermissions = (view: { children: JSX.Element }) => {
     const scroll = useScrollState();
@@ -513,11 +517,11 @@ function useDesktopSharing(props: ChatSessionSharingProps, controls: MenuControl
         kind: "group",
         id: "permissions",
         get items() {
-          return showPermissions() ? rosterItems()().map((item) => item()) : [];
+          return permissionItems();
         },
-        render: (children) => (
+        render: (renderItems) => (
           <Show when={showPermissions()}>
-            <SharingPermissions>{children}</SharingPermissions>
+            <SharingPermissions>{renderItems(permissionItems)}</SharingPermissions>
           </Show>
         ),
       },
