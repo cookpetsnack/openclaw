@@ -2,11 +2,13 @@
 
 import { asOptionalRecord } from "@openclaw/normalization-core/record-coerce";
 import { createRouter, definePage } from "@openclaw/uirouter";
-import { createComponent, createSignal, flush, Show } from "solid-js";
+import { createComponent, createSignal, flush } from "solid-js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { registerListener } from "../../../../../src/shared/listeners.ts";
 import { createDeferred as deferred } from "../../../../../test/helpers/promise.js";
+import type { RouteId } from "../../../app-route-paths.ts";
 import type { ApplicationContext, ApplicationGatewaySnapshot } from "../../../app/context.ts";
+import { RouterOutlet } from "../../../app/router-outlet.tsx";
 import { ShellLayoutOwner } from "../../../app/shell-layout-owner.ts";
 import { ShellLayoutProvider } from "../../../app/shell-layout-traits-solid.tsx";
 import { showConfirmDialog } from "../../../components/confirm-dialog.ts";
@@ -467,21 +469,20 @@ it("shows the replacement agent's diary while the retired action is pending", as
   }
 });
 
-it.each([
-  ["panel", "/settings/agents/main/overview", "maintenance"],
-  ["route", "/systems", "confirmation"],
-] as const)(
-  "leaves Dreaming on a %s switch to %s while %s is pending",
-  async (_, pathname, operation) => {
+it.each(["maintenance", "confirmation"] as const)(
+  "leaves Dreaming through RouterOutlet while %s is pending",
+  async (operation) => {
+    const pathname = "/systems";
     const pending = deferred<unknown>();
     const method = "doctor.memory.backfillDreamDiary";
-    const context = contextWithRequest((name) =>
+    const request = vi.fn((name: string) =>
       name === method
         ? pending.promise
         : name === DIARY
           ? diary("Sample main diary")
           : emptyReply(name),
     );
+    const context = contextWithRequest(request);
     context.emit({
       hello: gatewayHelloForMethods(
         [STATUS, DIARY, method, "config.patch"],
@@ -493,50 +494,98 @@ it.each([
       await pending.promise;
       return true;
     });
-    const location = { pathname: "/settings/agents/main/memory", search: "", hash: "" };
-    await context.router.navigate("agents", context, {}, location);
-    const [presented, setPresented] = createSignal(true);
-    const stop = context.router.subscribe(() => setPresented(false));
-    let state: AgentMemoryState;
-    const page = mountSolid(() =>
-      createComponent(Show, {
-        get when() {
-          return presented();
-        },
-        fallback: "Replacement page",
-        children(_visible) {
-          state = createAgentMemory(context, () => createAgentTarget("main"));
-          return AgentMemoryView({ state });
-        },
-      }),
+    const memoryModule = {
+      renderSolid: () =>
+        createComponent(AgentMemoryPanel, { initialAgentTarget: createAgentTarget("main") }),
+    };
+    const destinationModule = {
+      renderSolid: () => {
+        const body = document.createElement("p");
+        body.textContent = `Dreaming destination: ${pathname}`;
+        return body;
+      },
+    };
+    const router = createRouter<RouteId, ApplicationContext, typeof memoryModule>({
+      routes: [
+        definePage({
+          id: "agents",
+          path: "/settings/agents/:agentId/:panel",
+          component: () => memoryModule,
+        }),
+        definePage({ id: "systems", path: "/systems", component: () => destinationModule }),
+      ],
+    });
+    Object.assign(context, { router });
+    const provider = createSolidApplicationContextProvider(context);
+    const page = mountSolid(
+      () => createComponent(RouterOutlet, { router, retryContext: context }),
+      {
+        wrapper: provider.wrapper,
+      },
     );
+    let navigation: Promise<unknown> | undefined;
     try {
-      await waitForSolid(() => expect(page.container.textContent).toContain("Dreaming"));
+      await router.navigate(
+        "agents",
+        context,
+        {},
+        {
+          pathname: "/settings/agents/main/memory",
+          search: "",
+          hash: "",
+        },
+      );
+      await waitForSolid(() =>
+        expect(
+          page.container.querySelector<HTMLButtonElement>(".dreams__phase-toggle")?.disabled,
+        ).toBe(false),
+      );
+      const oldHost = page.container.querySelector("openclaw-agent-memory-panel")!;
       if (operation === "maintenance") {
-        state!.view().dreaming.onBackfillDiary();
-        await waitForSolid(() => expect(state!.diaryActionBusy()).toBe(true));
+        click(page.container, "#dreams-tab-advanced");
+        const backfill = [...page.container.querySelectorAll("button")].find(
+          (button) => button.textContent?.trim() === "Backfill",
+        );
+        expect(backfill).toBeDefined();
+        await waitForSolid(() => expect(backfill!.disabled).toBe(false));
+        backfill!.click();
+        await waitForSolid(() => expect(request).toHaveBeenCalledWith(method, { agentId: "main" }));
+        await waitForSolid(() => expect(page.container.textContent).toContain("Working…"));
       } else {
-        state!.setEnabled(false);
-        flush();
+        click(page.container, ".dreams__phase-toggle");
         click(page.container, ".exec-approval-actions button");
         await waitForSolid(() => expect(page.container.textContent).toContain("Saving…"));
         await waitForSolid(() => expect(context.runtimeConfig.patch).toHaveBeenCalledOnce());
       }
-      await context.router.navigate(
-        pathname === "/systems" ? "systems" : "agents",
+      navigation = router.navigate(
+        "systems",
         context,
         {},
         {
-          ...location,
           pathname,
+          search: "",
+          hash: "",
         },
       );
-      await waitForSolid(() => expect(page.container.textContent).toBe("Replacement page"));
+      await waitForSolid(() => {
+        expect(page.container.textContent).toContain(`Dreaming destination: ${pathname}`);
+        expect(oldHost.isConnected).toBe(false);
+        expect(page.container.querySelector("openclaw-agent-memory-panel")).toBeNull();
+        expect(page.container.querySelector(".exec-approval-actions")).toBeNull();
+      });
+      pending.reject(new Error("Late Dreaming failure"));
+      await Promise.allSettled([pending.promise, navigation]);
+      await waitForSolid(() => {
+        expect(page.container.textContent).toContain(`Dreaming destination: ${pathname}`);
+        expect(page.container.querySelector("openclaw-agent-memory-panel")).toBeNull();
+        expect(page.container.querySelector('[role="alert"]')).toBeNull();
+        expect(page.container.textContent).not.toContain("Late Dreaming failure");
+      });
     } finally {
       pending.resolve({ written: 1 });
-      await pending.promise;
-      stop();
+      await Promise.allSettled([pending.promise, navigation]);
       page.unmount();
+      router.stop();
     }
   },
 );
