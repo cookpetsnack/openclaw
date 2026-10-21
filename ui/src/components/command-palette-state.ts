@@ -126,7 +126,7 @@ export class CommandPaletteState {
   private activeId: string | null = null;
   private sessionItems: readonly CommandPaletteItem[] = [];
   private catalogItems: readonly CommandPaletteItem[] = [];
-  private sessionSearchRead: Promise<void> | undefined;
+  private sessionSearchRead: { promise: Promise<void> } | undefined;
   private sessionSearchFailed = false;
   private sessionSearchPartial = false;
   private archivedTranscriptsExcluded = 0;
@@ -512,7 +512,7 @@ export class CommandPaletteState {
       }
       void this.ensureCatalogItems();
       if (this.props.onSelectSession) {
-        this.sessionSearchRead = this.searchSessions(search);
+        this.sessionSearchRead = { promise: this.searchSessions(search) };
         this.changed();
       }
     };

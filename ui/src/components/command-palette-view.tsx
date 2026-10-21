@@ -419,7 +419,8 @@ export function CommandPaletteView(props: { readProps: () => CommandPaletteProps
   const hideSearch = () => results().hideSearch;
   // The collapsing search remains mounted with its last presented projection.
   const search = createParkedProjection(current, () => !hideSearch());
-  const sessionRead = createMemo(() => search().sessionSearchRead);
+  const sessionRequest = createMemo(() => search().sessionSearchRead);
+  const sessionRead = createMemo(() => sessionRequest()?.promise);
   const optionElements = new Map<string, HTMLDivElement>();
   const activeElement = () => {
     const item = results().items[results().activeIndex];
