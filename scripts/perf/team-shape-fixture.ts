@@ -19,6 +19,7 @@ export function parseTeamShapeOptions(argv: string[]) {
     options: {
       "state-dir": { type: "string" },
       sessions: { type: "string" },
+      agents: { type: "string" },
       runs: { type: "string" },
       approvals: { type: "string" },
       cron: { type: "string" },
@@ -82,6 +83,7 @@ export function parseTeamShapeOptions(argv: string[]) {
   return {
     stateDir: path.resolve(values["state-dir"] ?? "."),
     sessions,
+    agents: integer("agents", 1, 1),
     retainedRuns,
     approvals: integer("approvals", 200),
     cronJobs: integer("cron", 100),
@@ -145,8 +147,18 @@ export async function generateTeamShapeFixture(options: ReturnType<typeof parseT
       cron: { enabled: false },
       update: { checkOnStart: false },
       agents: {
-        entries: { main: { workspace: path.join(stateDir, "workspace") } },
+        entries: Object.fromEntries(
+          Array.from({ length: options.agents }, (_, index) => [
+            index === 0 ? "main" : `team-shape-agent-${index}`,
+            { workspace: path.join(stateDir, "workspace") },
+          ]),
+        ),
       },
+      ...(options.agents > 1
+        ? {
+            session: { store: path.join(stateDir, "agents", "main", "sessions", "sessions.json") },
+          }
+        : {}),
       logging: { file: path.join(stateDir, "gateway.log") },
     } satisfies OpenClawConfig;
     writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
@@ -174,6 +186,7 @@ export async function generateTeamShapeFixture(options: ReturnType<typeof parseT
         seed: options.seed,
         now: options.now,
         sessionCount: sessions.length,
+        agentCount: options.agents,
         ...sessionMetrics,
         sessionGenerationMs,
         ...extras,
@@ -200,12 +213,13 @@ async function main() {
   const options = parseTeamShapeOptions(process.argv.slice(2));
   if (options.help) {
     console.log(`Usage: node --import ./scripts/tsx.mjs scripts/perf/team-shape-fixture.ts --state-dir <new-dir> [options]
-  --sessions 5000 --runs 6000 --approvals 200 --cron 100 --projects 12
+  --sessions 5000 --agents 1 --runs 6000 --approvals 200 --cron 100 --projects 12
   --seed 967 --now <epoch-ms> --transcript-mib 64
   --long-transcript-entries 0 --long-transcript-sessions 4
   --worktree-files 0 --nested-repository
   --github-options-connected  Register synthetic GitHub origins for dashboard measurements.
   --launch --port 40967    Start an isolated loopback dev Gateway after generation.
+Additional agents share the main session store and synthetic workspace.
 State is synthetic and must not exist. Existing state is never overwritten.
 Transcript MiB is logical text before compression; actual database sizes are reported.
 Long transcript entries append 1 KiB messages with distinct 16 KiB assistant thinking signatures.
