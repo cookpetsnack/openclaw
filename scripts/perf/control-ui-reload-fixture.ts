@@ -242,7 +242,10 @@ if (provider) {
   applyMockOpenAiModelConfig(config, { mockPort: serviceTierPort, modelRef: "openai/gpt-5" });
   config.plugins.allow = [...new Set([...config.plugins.allow, "openai"])];
   config.plugins.load.paths = [
-    ...new Set([...config.plugins.load.paths, path.resolve("extensions/openai")]),
+    ...new Set([
+      ...config.plugins.load.paths,
+      path.resolve(path.dirname(values["runtime-entry"]), "extensions/openai"),
+    ]),
   ];
   await json(configPath, config);
   await new Promise<void>((resolve, reject) => {
