@@ -136,8 +136,7 @@ describe("maybeGenerateDashboardSessionTitle", () => {
       await expect(
         maybeGenerateDashboardSessionTitle({ ...titleParams(), userMessage }),
       ).resolves.toBe(false);
-      expect(mocks.generate).not.toHaveBeenCalled();
-      expect(mocks.patch).not.toHaveBeenCalled();
+      expectCalls(0, mocks.generate, mocks.patch);
     },
   );
 
@@ -276,14 +275,9 @@ describe("maybeGenerateDashboardSessionTitle", () => {
     async (outcome) => {
       vi.useFakeTimers();
       const reply = createDeferredCore();
-      const firstAttempt = createDeferredCore();
-      const label = createDeferredCore<string>();
+      const label = pendingLabel(true);
       const params = titleParams();
       const onFallback = vi.fn();
-      mocks.generate.mockImplementationOnce(async () => {
-        firstAttempt.resolve();
-        return await label.promise;
-      });
       if (outcome === "unavailable") {
         mocks.generate.mockRejectedValue(new Error("endpoint unavailable"));
       }
@@ -292,7 +286,7 @@ describe("maybeGenerateDashboardSessionTitle", () => {
         retryAfter: reply.promise,
         onFallback,
       });
-      await firstAttempt.promise;
+      await label.started;
       label.reject(new Error("conversation label generation failed (primary fallback)"));
       try {
         await vi.advanceTimersByTimeAsync(0);
@@ -552,6 +546,9 @@ describe("worktree title source lifecycle", () => {
     return { withSource, entered, closed, asserted, active };
   }
 
+  const awaitGeneration = (started: Promise<void>, request: Promise<unknown>) =>
+    awaitGateBeforeSettlement(started, request, "title completed before generation started");
+
   beforeEach(() => {
     current = { ...sourceEntry };
     mocks.generate.mockReset();
@@ -628,11 +625,7 @@ describe("worktree title source lifecycle", () => {
       );
       const settled = request.catch(() => {});
       try {
-        await awaitGateBeforeSettlement(
-          started.promise,
-          request,
-          "title completed before generation started",
-        );
+        await awaitGeneration(started.promise, request);
         await nextTurn();
         expect(source.entered.length).toBeGreaterThan(0);
         expect(source.closed).toEqual(source.entered);
@@ -705,11 +698,7 @@ describe("worktree title source lifecycle", () => {
     );
     const settled = first.catch(() => {});
     try {
-      await awaitGateBeforeSettlement(
-        started.promise,
-        first,
-        "title completed before generation started",
-      );
+      await awaitGeneration(started.promise, first);
       const duplicate = context.run("duplicate", () =>
         duplicateOwner.run(() =>
           maybeGenerateSessionTitle({ ...params, withSource: duplicateSource }),

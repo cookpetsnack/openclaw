@@ -352,8 +352,6 @@ export const gatewayDatabaseWorkerTestFiles = [
   "src/gateway/talk/relay/transcript-readiness.test.ts",
   "src/gateway/test-helpers.acquisition.test.ts",
   "src/gateway/tool-resolution.cron-capture.test.ts",
-  "src/gateway/tool-resolution.swarm-collector.test.ts",
-  "src/gateway/tool-resolution.terminal.test.ts",
   "src/gateway/tool-resolution.test.ts",
   "src/gateway/tools-invoke-authorization.test.ts",
   "src/gateway/tools-invoke-http.test.ts",

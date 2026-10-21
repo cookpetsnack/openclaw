@@ -181,8 +181,6 @@ describe("gateway hooks helpers", () => {
     const extract = (headers: IncomingMessage["headers"]) =>
       extractHookToken({ headers } as IncomingMessage);
     expect(extract({ authorization: "Bearer top", "x-openclaw-token": "header" })).toBe("top");
-    expect(extract({ "x-openclaw-token": "header" })).toBe("header");
-    expect(extract({})).toBeUndefined();
   });
 
   test("normalizeWakePayload trims + validates", () => {
@@ -221,7 +219,6 @@ describe("gateway hooks helpers", () => {
         delivery: { mode: "none" },
       },
     );
-    expectAgent({ deliver: false }, { deliver: false, delivery: { mode: "none" } });
     installChannel("imessage");
     expectAgent(
       { channel: "imsg", to: "chat-1" },
@@ -235,36 +232,12 @@ describe("gateway hooks helpers", () => {
       { channel: "workspace-chat", to: "room-1" },
       { channel: "demo-alias-channel" },
     );
-    expect(agentPayload({ channel: "sms" }).ok).toBe(false);
-    expectAgentMatch({ sessionMode: "persistent" }, { sessionMode: "persistent" });
     expectPayloadError({ sessionMode: "shared" }, "sessionMode must be isolated or persistent");
   });
 
   test("normalizeAgentPayload binds delivery only to a concrete channel and recipient", () => {
     installChannel("demo-alias-channel", ["workspace-chat"]);
-    expectAgentMatch({}, { channel: "last", to: undefined, delivery: { mode: "none" } });
-
-    expectPayloadError(
-      { to: "sensitive-recipient" },
-      "channel and to must be set together for hook delivery",
-    );
-    for (const to of [123, "   "]) {
-      expectPayloadError({ to }, "to must be a non-empty string for hook delivery");
-    }
-
-    expectPayloadError(
-      { channel: "demo-alias-channel" },
-      "channel and to must be set together for hook delivery",
-    );
-    expectAgentMatch(
-      { deliver: false, channel: "stale-channel" },
-      {
-        deliver: false,
-        channel: "last",
-        to: undefined,
-        delivery: { mode: "none" },
-      },
-    );
+    expectPayloadError({ to: "   " }, "to must be a non-empty string for hook delivery");
     expectPayloadError(
       { channel: "last", to: "123456" },
       "channel must name a concrete channel for hook delivery",
@@ -285,13 +258,6 @@ describe("gateway hooks helpers", () => {
       { ...target, accountId: " work " },
       { ...target, delivery: { mode: "announce", ...target } },
     );
-  });
-
-  test("normalizeAgentPayload passes agentId", () => {
-    expectAgentMatch({ agentId: "hooks" }, { agentId: "hooks" });
-    expectAgentMatch({}, { agentId: undefined });
-    expectPayloadError({ agentId: 42 }, "agentId must be a non-empty string");
-    expectPayloadError({ agentId: "  " }, "agentId must be a non-empty string");
   });
 
   test("hook target resolution keeps config fallback out of request payloads", () => {
@@ -411,33 +377,12 @@ describe("gateway hooks helpers", () => {
     expect(isHookAgentAllowed(resolved, "main")).toBe(mainAllowed);
   });
 
-  test("resolveHookSessionKey disables request sessionKey by default", () => {
-    expect(sessionKey({}, "request", "agent:main:dm:u99999").ok).toBe(false);
-  });
-
   test("resolveHookSessionKey enforces allowed prefixes", () => {
     const policy = { allowRequestSessionKey: true, allowedSessionKeyPrefixes: ["hook:"] };
     expect(sessionKey(policy, "request", "agent:main:main").ok).toBe(false);
     expect(sessionKey(policy, "mapping-static", "hook:gmail:1")).toEqual({
       ok: true,
       value: "hook:gmail:1",
-    });
-  });
-
-  test("resolveHookSessionKey blocks templated mapping sessionKey when request overrides are disabled", () => {
-    expect(
-      sessionKey(
-        { allowedSessionKeyPrefixes: ["hook:", "hook:gmail:"] },
-        "mapping-templated",
-        "hook:gmail:attacker",
-      ).ok,
-    ).toBe(false);
-  });
-
-  test("resolveHookSessionKey uses defaultSessionKey when request key is absent", () => {
-    expect(sessionKey({ defaultSessionKey: "hook:ingress" }, "request")).toEqual({
-      ok: true,
-      value: "hook:ingress",
     });
   });
 

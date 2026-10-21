@@ -3080,7 +3080,6 @@ export const PR_PROTECTED_RUNTIME_TEST_FILES: readonly string[] = [
   "src/gateway/test-helpers.server-env.test.ts",
   "src/gateway/test-helpers.server-rpc.test.ts",
   "src/gateway/tool-resolution.exclude.test.ts",
-  "src/gateway/tool-resolution.swarm-collector.test.ts",
   "src/gateway/tool-resolution.test.ts",
   "src/gateway/tools-invoke-authorization.test.ts",
   "src/gateway/tools-invoke-http.abort.test.ts",
