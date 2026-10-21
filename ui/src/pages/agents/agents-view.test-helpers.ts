@@ -65,7 +65,7 @@ export function createAgentViewTestProps(
     readData: () => data,
     readChannels: () => ({
       channelsSnapshot: null,
-      channelsLoading: false,
+      channelsRead: null,
       channelsError: null,
       channelsLastSuccess: null,
     }),
