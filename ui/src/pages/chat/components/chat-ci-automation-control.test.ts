@@ -88,8 +88,10 @@ class Fixture {
     await this.element.updateComplete;
   }
   async open(settled = true) {
-    this.root.open = true;
-    this.root.dispatchEvent(new Event("toggle"));
+    await new Promise<void>((resolve) => {
+      this.root.addEventListener("toggle", () => resolve(), { once: true });
+      this.root.open = true;
+    });
     await this.element.updateComplete;
     if (settled) {
       await this.settle();

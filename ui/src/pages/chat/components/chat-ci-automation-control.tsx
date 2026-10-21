@@ -2,16 +2,11 @@ import { parseAgentSessionKeyParts } from "@openclaw/session-url-contract";
 import {
   Errored,
   Loading,
-  action,
-  affects,
   createMemo,
-  createOptimistic,
-  createOptimisticStore,
   createSignal,
   createStore,
   isPending,
   latest,
-  refresh,
 } from "solid-js";
 import type { CronStatus } from "../../../api/types.ts";
 import type { MenuControls } from "../../../components/solid/menu.tsx";
@@ -44,6 +39,7 @@ const inputHandlers = new WeakMap<HTMLElement, (key: keyof Props) => void>();
 
 type AutomationState = {
   jobs: CiAutomationJobs;
+  pending: Partial<CiAutomationOptions>;
   schedulerEnabled: boolean | undefined;
   error: string | null;
 };
@@ -52,6 +48,7 @@ type Inventory = { jobs: CiAutomationJobs; schedulerEnabled: boolean };
 function createCiAutomation(props: Props, host: SolidBridgeElement<Props>) {
   const [state, setState] = createStore<AutomationState>({
     jobs: {},
+    pending: {},
     schedulerEnabled: undefined,
     error: null,
   });
@@ -77,32 +74,6 @@ function createCiAutomation(props: Props, host: SolidBridgeElement<Props>) {
   const [receipt, setReceipt] = createSignal(Promise.resolve<Inventory | undefined>(undefined));
   const read = createMemo(() => receipt());
   const [presentationScope, setPresentationScope] = createSignal({});
-  let presentationLifetime = Promise.withResolvers<void>();
-  const presentation = createMemo(() => {
-    presentationScope();
-    const [options, setOptions] = createOptimisticStore<CiAutomationOptions>(() => ({
-      autoFix: state.jobs.autoFix?.enabled === true,
-      autoMerge: state.jobs.autoMerge?.enabled === true,
-      autoArchive: state.jobs.autoArchive?.enabled === true,
-    }));
-    const [autoFixPending, setAutoFixPending] = createOptimistic(false);
-    const [autoMergePending, setAutoMergePending] = createOptimistic(false);
-    const [autoArchivePending, setAutoArchivePending] = createOptimistic(false);
-    return {
-      version,
-      options,
-      setOptions,
-      pending: {
-        autoFix: [autoFixPending, setAutoFixPending] as const,
-        autoMerge: [autoMergePending, setAutoMergePending] as const,
-        autoArchive: [autoArchivePending, setAutoArchivePending] as const,
-      },
-    };
-  });
-  function retirePresentation() {
-    presentationLifetime.resolve();
-    presentationLifetime = Promise.withResolvers<void>();
-  }
   // Synchronous admission is separate from Solid's deferred presentation writes.
   const writes = new Set<CiAutomationOption>();
   const disclosure = createCiDisclosure(host, handleVisibility, () => {
@@ -114,7 +85,6 @@ function createCiAutomation(props: Props, host: SolidBridgeElement<Props>) {
       stopGateway?.();
       stopEvents?.();
       version += 1;
-      retirePresentation();
       connection.dispose();
       readController?.abort();
     };
@@ -237,7 +207,6 @@ function createCiAutomation(props: Props, host: SolidBridgeElement<Props>) {
 
   function reset(): void {
     version += 1;
-    retirePresentation();
     setPresentationScope({});
     cancelRead();
     inventoryVersion = -1;
@@ -245,6 +214,7 @@ function createCiAutomation(props: Props, host: SolidBridgeElement<Props>) {
     writes.clear();
     setState((draft) => {
       draft.jobs = {};
+      draft.pending = {};
       draft.schedulerEnabled = undefined;
       draft.error = null;
     });
@@ -337,36 +307,6 @@ function createCiAutomation(props: Props, host: SolidBridgeElement<Props>) {
     }
   }
 
-  const presentMutation = action(function* (
-    view: ReturnType<typeof presentation>,
-    pending: Promise<void>,
-    retired: Promise<void>,
-    option: CiAutomationOption,
-    enabled: boolean,
-  ) {
-    const current = () => view.version === version && disclosure.isConnected();
-    try {
-      if (current()) {
-        view.pending[option][1](true);
-        view.setOptions((draft) => {
-          draft[option] = enabled;
-        });
-        affects(read);
-      }
-      // Retiring UI presentation does not cancel the admitted Cron write.
-      yield Promise.race([pending, retired]);
-      if (current()) {
-        void refresh(view.options);
-      }
-    } catch (error) {
-      if (current()) {
-        setState((draft) => {
-          draft.error = formatUiError(error);
-        });
-      }
-    }
-  });
-
   async function setEnabled(option: CiAutomationOption, enabled: boolean): Promise<void> {
     if (
       !disclosure.visible() ||
@@ -382,58 +322,54 @@ function createCiAutomation(props: Props, host: SolidBridgeElement<Props>) {
       return;
     }
     const admitted = owner;
-    const view = presentation();
     const currentJob = accepted?.jobs[option];
-    const retired = presentationLifetime.promise;
     // A pre-click inventory must never overwrite newer intent or its acknowledged revision.
     cancelRead();
     writes.add(option);
     setState((draft) => {
+      // Each option settles independently, including a rejected sibling write.
+      draft.pending[option] = enabled;
       draft.error = null;
     });
     queueRefresh();
-    const pending = write();
-    // Owner publication must land before the action joins this turn.
-    await Promise.resolve();
-    return presentMutation(view, pending, retired, option, enabled);
-
-    async function write() {
-      try {
-        const job = await setCiAutomationEnabled(
-          admitted.client,
-          admitted.target,
-          option,
-          enabled,
-          currentJob,
-        );
-        if (!admitted.current()) {
-          return;
-        }
-        if (accepted) {
-          accepted = { ...accepted, jobs: { ...accepted.jobs, [option]: job } };
-        }
+    try {
+      const job = await setCiAutomationEnabled(
+        admitted.client,
+        admitted.target,
+        option,
+        enabled,
+        currentJob,
+      );
+      if (!admitted.current()) {
+        return;
+      }
+      if (accepted) {
+        accepted = { ...accepted, jobs: { ...accepted.jobs, [option]: job } };
+      }
+      setState((draft) => {
+        draft.jobs[option] = job;
+      });
+    } catch (error) {
+      if (admitted.current()) {
+        // A rejected acknowledgement may hide an accepted write. Never mutate again
+        // until a complete authoritative inventory has reconciled the actual outcome.
+        inventoryVersion = -1;
         setState((draft) => {
-          draft.jobs[option] = job;
+          draft.error = formatUiError(error, t("chat.pullRequests.automationSaveFailed"));
         });
-      } catch (error) {
-        if (admitted.current()) {
-          // A rejected acknowledgement may hide an accepted write. Never mutate again
-          // until a complete authoritative inventory has reconciled the actual outcome.
-          inventoryVersion = -1;
-          setState((draft) => {
-            draft.error = formatUiError(error, t("chat.pullRequests.automationSaveFailed"));
-          });
-        }
-      } finally {
-        if (admitted.current()) {
-          writes.delete(option);
-          queueRefresh();
-        }
+      }
+    } finally {
+      if (admitted.current()) {
+        writes.delete(option);
+        setState((draft) => {
+          delete draft.pending[option];
+        });
+        queueRefresh();
       }
     }
   }
 
-  type ViewProps = Omit<ChatCiAutomationProps, "options" | "pending" | "loading" | "saving">;
+  type ViewProps = Omit<ChatCiAutomationProps, "loading">;
   const view = createMemo<ViewProps>(() => {
     const snapshot = gatewayProjection()?.read();
     const unavailable = !automationTarget(props)
@@ -444,6 +380,13 @@ function createCiAutomation(props: Props, host: SolidBridgeElement<Props>) {
           ? t("chat.pullRequests.automationAdminRequired")
           : undefined;
     return {
+      options: {
+        autoFix: state.pending.autoFix ?? state.jobs.autoFix?.enabled === true,
+        autoMerge: state.pending.autoMerge ?? state.jobs.autoMerge?.enabled === true,
+        autoArchive: state.pending.autoArchive ?? state.jobs.autoArchive?.enabled === true,
+      },
+      pending: state.pending,
+      saving: Object.keys(state.pending).length > 0,
       jobs: state.jobs,
       schedulerEnabled: state.schedulerEnabled,
       error: state.error,
@@ -455,14 +398,14 @@ function createCiAutomation(props: Props, host: SolidBridgeElement<Props>) {
         setState((draft) => {
           draft.error = null;
         });
-        invalidate();
+        refreshPending = true;
+        load();
       },
     };
   });
   return {
     view,
     read,
-    presentation,
     scope: presentationScope,
     hasInventory: () => {
       latest(read);
@@ -475,24 +418,9 @@ export type ChatCiAutomationElement = SolidBridgeElement<Props>;
 
 function ChatCiAutomationContent(props: Props, host: SolidBridgeElement<Props>) {
   const model = createCiAutomation(props, host);
-  const pending = (): Partial<CiAutomationOptions> => {
-    const view = model.presentation();
-    return {
-      autoFix: view.pending.autoFix[0]() ? view.options.autoFix : undefined,
-      autoMerge: view.pending.autoMerge[0]() ? view.options.autoMerge : undefined,
-      autoArchive: view.pending.autoArchive[0]() ? view.options.autoArchive : undefined,
-    };
-  };
-  const saving = () => {
-    const current = model.presentation().pending;
-    return current.autoFix[0]() || current.autoMerge[0]() || current.autoArchive[0]();
-  };
   const content = (loading = false, error?: () => string, retry?: () => void) => (
     <ChatCiAutomationView
       {...model.view()}
-      options={model.presentation().options}
-      pending={pending()}
-      saving={saving()}
       loading={loading || isPending(model.read)}
       disabled={loading || Boolean(error) || model.view().disabled || !model.hasInventory()}
       error={error ? error() : model.view().error}
