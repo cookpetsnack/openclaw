@@ -1314,6 +1314,15 @@ The upstream elapsed times include the injected wait and fetch header resolution
 they are not additive handler self-time. Use Gateway diagnostics for handler time
 and the existing RPC byte counts for serialization volume.
 
+`--list-profile-reference <reference>` applies the person-reference filter to
+concurrent list polling. Use a missing hexadecimal prefix such as `ffffffff` to
+exercise resolution across the full visible retained roster; that workload
+accepts an empty page and measures reference resolution rather than row rendering.
+The ordinary list-polling workload still requires nonempty pages. Add
+`--capture-responses` to a memory soak to capture the seeded roster after the
+measured window; person-filtered polling also adds four person-reference
+requests to that capture.
+
 Each allocation profile includes collected objects and reports decimal
 `allocatedMbPerTurn`. Allocation soaks keep one continuous sampling window and
 report it as `wholeSoakAllocation` with `allocation-soak.heapprofile`. These long
@@ -2078,6 +2087,24 @@ Use `--count-work` in a separate process for exact comparator, pin, activity, an
 key-normalization call counts. That pass enables coverage before loading the owner
 and excludes performance measurements. Run the same script on both revisions.
 
+For profile-reference filtering over 5,000 prepared sessions, run:
+
+```sh
+node --expose-gc --import ./scripts/tsx.mjs scripts/perf/session-profile-reference-measure.ts \
+  --iterations 108 --output sample.json --golden responses.json
+```
+
+Each process reports one warm main-thread CPU and sampled-allocation observation
+per `filterSessionEntries` operation, including objects collected by minor and
+major GC. The 27 requests cover three viewer scopes, canonical and merged aliases,
+retained profiles, prefix and missing references, archives, and empty time windows.
+Every session has three participants; the 50 profile identities include ten aliases
+and ten retained identities without durable rows. Preparation uses an isolated
+empty catalog and asserts that no SQLite file is created. Compare `responses.json`
+byte-for-byte between revisions; it contains complete 25-row filter results and
+full-roster facets. Run at least five alternating baseline/candidate processes on
+the benchmark host. This is an owner probe, not Gateway or transport evidence.
+
 For long RPC allocation windows, use `--warmup-operations` to warm fewer requests
 than the measured `--operations` count. For example, `--scenario sessions.list
 --warmup-operations 25000 --operations 100000 --rounds 1 --allocations --trace-gc
@@ -2092,6 +2119,17 @@ Turn scenarios use `--runs` (forced
 to one for `chat.send`); `--chunks` controls streamed answer size. `plugins.reload`
 defaults to one operation per round; other RPC scenarios default to 100. Count
 the warmup when choosing reload batches: the admin RPC allows 30 calls per minute.
+Reload rounds honor `--round-interval-ms`; use single-operation rounds spaced
+by at least 2,400 ms for longer captures below that limit.
+The reload scenario retains the synthetic fixture's `plugins.allow` and
+`plugins.entries` configuration, then adds its no-op plugin. Configure bundled
+plugins there to include their metadata and runtime participation in the workload;
+the default team-shape fixture disables plugins. `plugin-inventory.json` records
+the actual runtime states before capture, including enabled plugins that remain
+unloaded under their lazy activation policy. The harness replaces `plugins.load`
+with its own synthetic plugin directory.
+With diagnostics enabled, `wholeReloadDiagnostics` retains one full-run event-loop
+histogram and GC totals; use its observation counts to qualify tail percentiles.
 Setup, startup
 recovery, subscription establishment, and one warmup round are outside capture.
 Each measured window includes completion and event drain, including the one-second
