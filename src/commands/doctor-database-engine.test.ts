@@ -3,6 +3,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { note } from "../../packages/terminal-core/src/note.js";
+import type { OpenClawConfig } from "../config/types.openclaw.js";
 import { ensureSqliteLibrarySelected } from "../infra/bun-sqlite-library.js";
 import { openNodeSqliteDatabase } from "../infra/node-sqlite.js";
 import { createColdPluginFixture } from "../plugins/test-helpers/cold-plugin-fixtures.js";
@@ -34,60 +35,45 @@ beforeEach(() => {
 });
 
 describe("Doctor database engines", () => {
-  it("reports default SQLite store families without an experimental warning", async () => {
-    const findings = await noteDatabaseEngines({});
-    expect(note).toHaveBeenCalledExactlyOnceWith(
-      expect.stringContaining(
-        "Shared state: default=sqlite, override=inherit, effective=sqlite (configured)",
+  it.each<{ name: string; config: OpenClawConfig; lines: string[] }>([
+    {
+      name: "default SQLite",
+      config: {},
+      lines: ["Shared state: default=sqlite, override=inherit, effective=sqlite (configured)"],
+    },
+    {
+      name: "PostgreSQL",
+      config: { database: { engine: "postgres" } },
+      lines: ["Shared state", "Agent data", "Logbook"].map(
+        (label) => `${label}: default=postgres, override=inherit, effective=postgres (configured)`,
       ),
-      "Database engines",
-    );
-    expect(vi.mocked(note).mock.calls[0]?.[0]).not.toContain("experimental");
-    expect(findings).toEqual([]);
-  });
-
-  it("reports supported PostgreSQL selections without a blanket warning", async () => {
-    const cfg = { database: { engine: "postgres" as const } };
-    const findings = await noteDatabaseEngines(cfg);
-    expect(note).toHaveBeenCalledExactlyOnceWith(
-      expect.stringContaining(
-        "Shared state: default=postgres, override=inherit, effective=postgres (configured)",
-      ),
-      "Database engines",
-    );
-    const output = String(vi.mocked(note).mock.calls[0]?.[0]);
-    expect(output).toContain(
-      "Agent data: default=postgres, override=inherit, effective=postgres (configured)",
-    );
-    expect(output).toContain(
-      "Logbook: default=postgres, override=inherit, effective=postgres (configured)",
-    );
-    expect(output).not.toContain("experimental");
-    expect(findings).toEqual([]);
-  });
-
-  it("reports supported mixed overrides with a SQLite default", async () => {
-    const cfg = {
-      database: {
-        engine: "sqlite" as const,
-        families: {
-          state: { engine: "postgres" as const },
-          agent: { engine: "sqlite" as const },
-          workboard: { engine: "postgres" as const },
+    },
+    {
+      name: "mixed overrides",
+      config: {
+        database: {
+          engine: "sqlite",
+          families: {
+            state: { engine: "postgres" },
+            agent: { engine: "sqlite" },
+            workboard: { engine: "postgres" },
+          },
         },
       },
-    };
-    const findings = await noteDatabaseEngines(cfg);
+      lines: [
+        "Workboard: default=sqlite, override=postgres, effective=postgres (configured)",
+        "Agent data: default=sqlite, override=sqlite, effective=sqlite (configured)",
+        "Database quarantine: default=sqlite, override=fixed local, effective=sqlite (configured)",
+      ],
+    },
+  ])("reports $name without blanket warnings", async ({ config, lines }) => {
+    const findings = await noteDatabaseEngines(config);
     const output = String(vi.mocked(note).mock.calls[0]?.[0]);
-    expect(output).toContain(
-      "Workboard: default=sqlite, override=postgres, effective=postgres (configured)",
-    );
-    expect(output).toContain(
-      "Agent data: default=sqlite, override=sqlite, effective=sqlite (configured)",
-    );
-    expect(output).toContain(
-      "Database quarantine: default=sqlite, override=fixed local, effective=sqlite (configured)",
-    );
+    expect(note).toHaveBeenCalledExactlyOnceWith(output, "Database engines");
+    for (const line of lines) {
+      expect(output).toContain(line);
+    }
+    expect(output).not.toContain("experimental");
     expect(findings).toEqual([]);
   });
 

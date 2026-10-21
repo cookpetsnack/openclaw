@@ -90,6 +90,15 @@ function configNote(message: string) {
   expectNoteContaining(message, "Gateway service config");
 }
 
+function mockService(
+  command = createGatewayCommand(),
+  audit: ServiceConfigAudit = { ok: true, issues: [] },
+) {
+  mocks.readCommand.mockResolvedValue(command);
+  mocks.buildGatewayInstallPlan.mockResolvedValue(command);
+  mocks.auditGatewayServiceConfig.mockResolvedValue(audit);
+}
+
 async function withSourceCheckout(run: (entrypoint: string) => Promise<void>) {
   await withTempDir("openclaw-doctor-service-layout-", async (root) => {
     for (const directory of [".git", "src", "extensions", "dist"]) {
@@ -107,8 +116,7 @@ async function withSourceCheckout(run: (entrypoint: string) => Promise<void>) {
 }
 
 function setupGatewayEntrypointRepairScenario(current: string, installed: string) {
-  mocks.readCommand.mockResolvedValue(createGatewayCommand(current));
-  mocks.auditGatewayServiceConfig.mockResolvedValue({ ok: true, issues: [] });
+  mockService(createGatewayCommand(current));
   mocks.buildGatewayInstallPlan.mockResolvedValue({
     ...createGatewayCommand(installed),
     workingDirectory: "/tmp",
@@ -117,11 +125,11 @@ function setupGatewayEntrypointRepairScenario(current: string, installed: string
 }
 
 function setupGatewayTokenRepairScenario() {
-  mocks.readCommand.mockResolvedValue({
-    programArguments: gatewayProgramArguments,
-    environment: { OPENCLAW_GATEWAY_TOKEN: "stale-token" },
-  });
-  mocks.auditGatewayServiceConfig.mockResolvedValue(
+  mockService(
+    {
+      programArguments: gatewayProgramArguments,
+      environment: { OPENCLAW_GATEWAY_TOKEN: "stale-token" },
+    },
     createRecommendedServiceAudit(
       "gateway-token-mismatch",
       "Gateway service OPENCLAW_GATEWAY_TOKEN does not match gateway.auth.token",
@@ -181,10 +189,7 @@ describe("maybeRepairGatewayServiceConfig", () => {
     expect(mocks.install).not.toHaveBeenCalled();
   });
   it("reports a passing vendor runtime note without rewriting the service", async () => {
-    const command = createGatewayCommand("/opt/openclaw/dist/index.js");
-    mocks.readCommand.mockResolvedValue(command);
-    mocks.buildGatewayInstallPlan.mockResolvedValue(command);
-    mocks.auditGatewayServiceConfig.mockResolvedValue({
+    mockService(createGatewayCommand("/opt/openclaw/dist/index.js"), {
       ok: true,
       issues: [],
       runtimeNote: "Node 24.15.0: unsupported version, capability check passed.",
@@ -230,11 +235,7 @@ describe("maybeRepairGatewayServiceConfig", () => {
       gateway: {
         auth: {
           mode: "token",
-          token: {
-            source: "exec",
-            provider: "execmain",
-            id: "gateway/token",
-          },
+          token: { source: "exec", provider: "execmain", id: "gateway/token" },
         },
       },
     };
@@ -252,11 +253,7 @@ describe("maybeRepairGatewayServiceConfig", () => {
         "System Node 20.20.2 at /usr/bin/node is outside the supported range. Using /home/test/.nvm/versions/node/v24.16.0/bin/node for the daemon.",
         "Gateway runtime",
       );
-      return {
-        programArguments: [nvmNode, "/usr/local/bin/openclaw", "gateway", "--port", "18789"],
-        workingDirectory: "/tmp",
-        environment: {},
-      };
+      return { ...createGatewayCommand(undefined, nvmNode), workingDirectory: "/tmp" };
     });
     mocks.auditGatewayServiceConfig.mockResolvedValue({
       ok: true,
@@ -270,20 +267,18 @@ describe("maybeRepairGatewayServiceConfig", () => {
     });
     mocks.renderSystemNodeWarning.mockReturnValue("duplicate doctor runtime warning");
     await runRepair();
-    const runtimeNotes = mocks.note.mock.calls.filter(([, title]) => title === "Gateway runtime");
-    const runtimeMessages = runtimeNotes.map(([message]) => message);
+    const runtimeMessages = mocks.note.mock.calls
+      .filter(([, title]) => title === "Gateway runtime")
+      .map(([message]) => String(message));
     expect(runtimeMessages).not.toContain("duplicate doctor runtime warning");
-    expect(runtimeMessages.map((message) => String(message)).join("\n")).not.toContain("not found");
-    expect(runtimeMessages.map((message) => String(message)).join("\n")).toContain(
+    expect(runtimeMessages.join("\n")).not.toContain("not found");
+    expect(runtimeMessages.join("\n")).toContain(
       "Using /home/test/.nvm/versions/node/v24.16.0/bin/node",
     );
   });
 
   it("reports failed Bun probes without runtime migration", async () => {
-    const command = createGatewayCommand(undefined, "/opt/bun");
-    mocks.readCommand.mockResolvedValue(command);
-    mocks.buildGatewayInstallPlan.mockResolvedValue(command);
-    mocks.auditGatewayServiceConfig.mockResolvedValue({
+    mockService(createGatewayCommand(undefined, "/opt/bun"), {
       ok: false,
       issues: [
         {
@@ -304,6 +299,112 @@ describe("maybeRepairGatewayServiceConfig", () => {
       expect(options).toEqual(expect.objectContaining({ runtime: "bun", runtimePath: "/opt/bun" }));
     }
   });
+
+  it.each([
+    { supported: false, approved: false },
+    { supported: false, approved: true },
+    { supported: true, approved: false },
+  ])(
+    "previews runtime and source findings before consent (supported=$supported, approved=$approved)",
+    async ({ supported, approved }) => {
+      mocks.needsNodeRuntimeMigration.mockReturnValue(true);
+      mocks.resolveGatewayAuthTokenForService.mockResolvedValue({});
+      const checkPreview = async (entrypoint: string) => {
+        const node = "/home/test/.nvm/bin/node";
+        const command = {
+          programArguments: [node, entrypoint, "gateway"],
+          environment: supported ? {} : { PATH: "/old/bin" },
+        };
+        mocks.readCommand.mockResolvedValue(command);
+        mocks.buildGatewayInstallPlan.mockImplementation(async ({ runtimePath }) => ({
+          ...command,
+          programArguments: supported
+            ? [runtimePath ?? node, ...command.programArguments.slice(1)]
+            : command.programArguments,
+          environment: supported ? {} : { PATH: "/usr/bin:/bin" },
+        }));
+        mocks.auditGatewayServiceConfig.mockResolvedValue({
+          ...createRecommendedServiceAudit(
+            supported ? "runtime" : "gateway-node-version-manager",
+            "runtime migration",
+          ),
+          definitionDrift: supported
+            ? undefined
+            : [
+                {
+                  kind: "outdated",
+                  key: "ExitTimeOut",
+                  current: 20,
+                  expected: 330,
+                  message: "old shutdown budget",
+                },
+              ],
+        });
+        mocks.resolveSystemNodeInfo.mockResolvedValue(
+          supported ? { path: "/usr/bin/node", status: "supported", version: "24.16.0" } : null,
+        );
+        const prompter = makeDoctorPrompts();
+        prompter.confirmRuntimeRepair.mockImplementation(async ({ message }) => {
+          const preview = mocks.note.mock.calls.find(
+            ([, title]) => title === "Gateway service repair preview",
+          )?.[0];
+          expect(preview).toContain(`Runtime: ${node} -> ${supported ? "/usr/bin/node" : node}`);
+          expect(preview).toContain(
+            supported ? "PATH: not set -> not set" : "PATH: /old/bin -> /usr/bin:/bin",
+          );
+          if (supported) {
+            expect(preview).not.toContain("No supported system Node");
+          } else {
+            for (const text of [
+              `Entrypoint: ${entrypoint} -> ${entrypoint}`,
+              "Shutdown budget (ExitTimeOut): 20 -> 330",
+              "No supported system Node is available",
+              "retains a source-checkout entrypoint",
+              "`openclaw --profile preview-proof gateway install --force`",
+            ]) {
+              expect(preview).toContain(text);
+            }
+            expect(message).not.toContain("recommended defaults");
+          }
+          return approved;
+        });
+        await withEnvAsync(
+          {
+            ...(!supported ? { OPENCLAW_GATEWAY_TOKEN: undefined } : {}),
+            OPENCLAW_PROFILE: "preview-proof",
+            OPENCLAW_CONTAINER_HINT: undefined,
+          },
+          () => runRepair(undefined, {}, prompter),
+        );
+        expect(mocks.note).toHaveBeenCalledWith(
+          expect.stringContaining("`openclaw --profile preview-proof gateway install --force`"),
+          "Gateway service config",
+        );
+        expect(prompter.confirmRuntimeRepair).toHaveBeenCalledOnce();
+        expect(mocks.install).toHaveBeenCalledTimes(Number(approved));
+        if (approved) {
+          expect(mocks.note).toHaveBeenCalledWith(
+            expect.stringContaining("Install system Node"),
+            "Gateway service findings still unresolved",
+          );
+          expect(mocks.install).toHaveBeenCalledWith(
+            expect.objectContaining({ programArguments: command.programArguments }),
+          );
+        } else if (!supported) {
+          expect(
+            mocks.note.mock.calls.some(
+              ([, title]) => title === "Gateway service findings still unresolved",
+            ),
+          ).toBe(false);
+        }
+      };
+      if (supported) {
+        await checkPreview("/synthetic/openclaw/dist/index.js");
+      } else {
+        await withSourceCheckout(checkPreview);
+      }
+    },
+  );
 
   registerDoctorRuntimePinTests({ mocks, runRepair, createRecommendedServiceAudit });
 
@@ -330,7 +431,7 @@ describe("maybeRepairGatewayServiceConfig", () => {
     );
     expect(mocks.install).toHaveBeenCalledWith(
       expect.objectContaining({
-        programArguments: [systemNodePath, "/usr/local/bin/openclaw", "gateway", "--port", "18789"],
+        programArguments: createGatewayCommand(undefined, systemNodePath).programArguments,
       }),
     );
   });
@@ -572,9 +673,7 @@ describe("maybeRepairGatewayServiceConfig", () => {
 
   it("warns when the gateway service entrypoint resolves to a source checkout", async () => {
     await withSourceCheckout(async (entrypoint) => {
-      mocks.readCommand.mockResolvedValue(createGatewayCommand(entrypoint));
-      mocks.auditGatewayServiceConfig.mockResolvedValue({ ok: true, issues: [] });
-      mocks.buildGatewayInstallPlan.mockResolvedValue(createGatewayCommand(entrypoint));
+      mockService(createGatewayCommand(entrypoint));
       await runRepair();
       configNote("resolves to a source checkout");
       configNote(
