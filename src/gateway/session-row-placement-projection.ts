@@ -112,9 +112,10 @@ export function createSessionRowPlacementProjection(
   const activeReads = new Set<PlacementReadBatch>();
   const queuedReads: PlacementReadBatch[] = [];
   const reads = new Set<PlacementReadBatch>();
-  const retireSettledReads = (id?: string) => {
+  const retireStartedReads = (id?: string) => {
     for (const read of reads) {
-      if (read.settled) {
+      // Dispatched reads may settle with an older snapshot; queued reads have not captured one.
+      if (read.started) {
         if (id) {
           read.ids.delete(id);
         } else {
@@ -278,7 +279,7 @@ export function createSessionRowPlacementProjection(
       }
     },
     forget(id: string) {
-      retireSettledReads(id);
+      retireStartedReads(id);
       registered.delete(id);
       dirty.delete(id);
       resident.delete(id);
@@ -288,13 +289,13 @@ export function createSessionRowPlacementProjection(
       if (!published?.placements.has(id) || !registered.has(id)) {
         return false;
       }
-      retireSettledReads(id);
+      retireStartedReads(id);
       resident.set(id, select(published, id));
       dirty.delete(id);
       return true;
     },
     invalidate(id?: string) {
-      retireSettledReads(id);
+      retireStartedReads(id);
       if (id) {
         resident.delete(id);
         if (registered.has(id)) {

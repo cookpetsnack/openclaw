@@ -160,29 +160,35 @@ export async function generateTeamShapeFixture(options: ReturnType<typeof parseT
           ]),
         ),
       },
-      ...(options.agents > 1
-        ? {
-            session: { store: path.join(stateDir, "agents", "main", "sessions", "sessions.json") },
-          }
-        : {}),
       logging: { file: path.join(stateDir, "gateway.log") },
     } satisfies OpenClawConfig;
     writeFileSync(configPath, `${JSON.stringify(config, null, 2)}\n`);
 
     // Resolvers capture environment on import; bind the fixture before loading storage owners.
-    const [{ seedTeamShapeSessions }, { seedTeamShapeExtras }, agentDb, stateDb] =
-      await Promise.all([
-        import("./team-shape-sessions.ts"),
-        import("./team-shape-extras.ts"),
-        import("../../src/state/openclaw-agent-db.js"),
-        import("../../src/state/openclaw-state-db.js"),
-      ]);
+    const [
+      { seedTeamShapeSessions, waitForTeamShapeWriteBudget },
+      { seedTeamShapeExtras },
+      agentDb,
+      stateDb,
+    ] = await Promise.all([
+      import("./team-shape-sessions.ts"),
+      import("./team-shape-extras.ts"),
+      import("../../src/state/openclaw-agent-db.js"),
+      import("../../src/state/openclaw-state-db.js"),
+    ]);
     const agent = agentDb.openOpenClawAgentDatabase({ agentId: "main" });
     const state = stateDb.openOpenClawStateDatabase();
     let summary;
     try {
       const seeded = await seedTeamShapeSessions(options);
       const extras = await seedTeamShapeExtras({ ...options, sessions: seeded.sessions });
+      for (let index = 1; index < options.agents; index++) {
+        await waitForTeamShapeWriteBudget();
+        const additional = agentDb.openOpenClawAgentDatabase({
+          agentId: `team-shape-agent-${index}`,
+        });
+        await agentDb.closeOpenClawAgentDatabaseByPathAsync(additional.path);
+      }
       agent.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
       state.db.exec("PRAGMA wal_checkpoint(TRUNCATE)");
       const { sessions, generationMs: sessionGenerationMs, ...sessionMetrics } = seeded;
@@ -225,7 +231,7 @@ async function main() {
   --worktree-files 0 --nested-repository
   --github-options-connected  Register synthetic GitHub origins for dashboard measurements.
   --launch --port 40967    Start an isolated loopback dev Gateway after generation.
-Additional agents share the main session store and synthetic workspace.
+Additional agents have empty, independently owned stores and share the synthetic workspace.
 State is synthetic and must not exist. Existing state is never overwritten.
 Transcript MiB is logical text before compression; actual database sizes are reported.
 Long transcript entries append 1 KiB messages with distinct 16 KiB assistant thinking signatures.

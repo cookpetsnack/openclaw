@@ -67,16 +67,28 @@ function placementSnapshot(reconciling: readonly string[]): WorkerSessionPlaceme
   };
 }
 
-it.each(["exact", "all"] as const)(
-  "shares a held placement read only until %s invalidation",
-  async (scope) => {
+it.each([
+  ["exact", "pending"],
+  ["all", "pending"],
+  ["exact", "settled"],
+  ["all", "settled"],
+] as const)(
+  "shares a held placement read only until %s invalidation while %s",
+  async (scope, phase) => {
     const { read } = placementReadView();
     const id = "held-placement";
     const entered = createDeferredCore();
     const release = createDeferredCore();
+    const sourceEntered = createDeferredCore();
+    const releaseSource = createDeferredCore();
     let holding = true;
     let reconciling = true;
-    const readProjection = vi.fn(async () => placementSnapshot(reconciling ? [id] : []));
+    const readProjection = vi.fn(async () => {
+      const snapshot = placementSnapshot(reconciling ? [id] : []);
+      sourceEntered.resolve();
+      await releaseSource.promise;
+      return snapshot;
+    });
     const owner = createSessionRowPlacementProjection({ readProjection }, () => undefined);
     const consume = () => owner.getProjectionFacts(id)?.workspaceResultReconciling;
     const first = read(owner, id, consume, () => {
@@ -88,13 +100,21 @@ it.each(["exact", "all"] as const)(
     });
     const settled = Promise.allSettled([first]);
     try {
+      await awaitGateBeforeSettlement(sourceEntered.promise, first, "Placement read did not enter");
+      if (phase === "pending") {
+        reconciling = false;
+        owner.invalidate(scope === "exact" ? id : undefined);
+      }
+      releaseSource.resolve();
       await awaitGateBeforeSettlement(entered.promise, first, "Row preparation did not enter");
-      await expect(read(owner, id, consume)).resolves.toBe(true);
-      expect(readProjection).toHaveBeenCalledOnce();
+      if (phase === "settled") {
+        await expect(read(owner, id, consume)).resolves.toBe(true);
+        expect(readProjection).toHaveBeenCalledOnce();
 
-      reconciling = false;
-      owner.invalidate(scope === "exact" ? id : undefined);
-      // Residency must not revive a settled snapshot retired by the publication.
+        reconciling = false;
+        owner.invalidate(scope === "exact" ? id : undefined);
+      }
+      // Residency must not revive a snapshot retired by the publication.
       owner.register(id);
       await expect(read(owner, id, consume)).resolves.toBe(false);
       expect(readProjection).toHaveBeenCalledTimes(2);
@@ -105,6 +125,7 @@ it.each(["exact", "all"] as const)(
       expect(readProjection).toHaveBeenCalledTimes(2);
     } finally {
       holding = false;
+      releaseSource.resolve();
       release.resolve();
       owner.dispose();
       await settled;

@@ -390,9 +390,9 @@ The launcher intentionally does not reuse an operator's package-manager cache.
 Defaults are 5,000 sessions in the `main` agent, 6,000 retained subagent runs,
 200 pending approval recovery records, 100 disabled cron jobs, and 12 registered
 projects with committed synthetic Git repositories and real worktrees. `--agents 128`
-adds a synthetic agent roster sharing the main session store and workspace;
-sessions remain owned by `main`. This exercises roster size without duplicating
-transcript payloads across databases.
+adds a synthetic agent roster sharing the workspace, with independently owned
+empty stores prepared sequentially. Sessions remain owned by `main`. This
+exercises roster size without duplicating transcript payloads across databases.
 
 Sessions have 24 synthetic human identities, assigned owners, 1–5 participants,
 a 70/10/10/10 split of shared/read-only/suggest/draft visibility, pinned rows and
