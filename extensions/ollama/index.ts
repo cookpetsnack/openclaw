@@ -811,7 +811,6 @@ export default definePluginEntry({
                 customModelId: ctx.opts.customModelId as string | undefined,
               },
               runtime: ctx.runtime,
-              agentDir: ctx.agentDir,
             });
           },
         },
