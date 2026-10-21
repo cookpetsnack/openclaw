@@ -167,6 +167,47 @@ describe("Model setup refresh continuity", () => {
     }
   });
 
+  it("shows native catalog progress during a cold retry", async () => {
+    const { context, client, request } = createFirstRunContext();
+    const retry = createDeferred<ModelCatalogResult>();
+    let reads = 0;
+    request.mockImplementation(async (method) => {
+      if (method === "models.list") {
+        if (++reads === 1) {
+          throw new Error("Cold catalog read failed.");
+        }
+        return retry.promise;
+      }
+      throw new Error("Unexpected request: " + method);
+    });
+    const { page } = await mountDetection(context, client, inventory, false);
+    const section = page.querySelector<HTMLElement>("[data-native-model-setup]")!;
+    try {
+      pageButton(section, ".picker-select__trigger")!.click();
+      await waitForFast(() =>
+        expect(section.querySelector('[role="alert"]')?.textContent).toContain(
+          "Cold catalog read failed",
+        ),
+      );
+      pageButton(section, '[role="alert"] button')!.click();
+      await waitForFast(() => {
+        expect(callsFor(request, "models.list")).toHaveLength(2);
+        expect(section.querySelector('p[role="status"]')?.textContent).toContain(
+          "Checking installed agents",
+        );
+        expect(section.querySelector('[role="alert"]')).toBeNull();
+      });
+      retry.resolve({ models: [] });
+      await waitForFast(() =>
+        expect(section.querySelector('p[role="status"]')?.textContent).toContain(
+          "No models are available from installed agents",
+        ),
+      );
+    } finally {
+      retry.resolve({ models: [] });
+    }
+  });
+
   it("reopens the published native inventory without restarting discovery and retries explicitly", async () => {
     const { context, client, request } = createFirstRunContext();
     const model = {

@@ -236,7 +236,15 @@ export function NativeModelSetupView(props: { owner: NativeModelSetup }) {
   // Only status regions wait; cached picker controls stay interactive during refresh.
   return renderNativeModelSetupSection(
     <>
-      <Errored fallback={() => undefined}>
+      <Errored
+        fallback={() => (
+          <>
+            {isPending(() => props.owner.result()) ? (
+              <p role="status">{t("modelSetup.nativeModels.loading")}</p>
+            ) : undefined}
+          </>
+        )}
+      >
         <Loading
           on={props.owner.request()}
           fallback={<p role="status">{t("modelSetup.nativeModels.loading")}</p>}
@@ -266,7 +274,10 @@ export function NativeModelSetupView(props: { owner: NativeModelSetup }) {
       ) : undefined}
       <Errored
         fallback={(error) => (
-          <NativeCatalogError owner={props.owner} message={formatModelSetupError(error())} />
+          <NativeCatalogError
+            owner={props.owner}
+            message={isPending(() => props.owner.result()) ? null : formatModelSetupError(error())}
+          />
         )}
       >
         <Loading on={props.owner.request()}>
