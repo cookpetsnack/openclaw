@@ -45,7 +45,7 @@ import {
 } from "./chat-send-support.ts";
 import { refreshCurrentChatSessionList } from "./chat-session.ts";
 import type { ChatPageHost } from "./chat-state-host.ts";
-import { applyChatModelCatalogSnapshot } from "./chat-state-refresh.ts";
+import { applyChatModelCatalogSnapshot, refreshChatModelAuthStatus } from "./chat-state-refresh.ts";
 import { resolveChatAgentId, selectedChatSessionRow } from "./chat-state-route.ts";
 import {
   refreshSessionWorkspace,
@@ -475,6 +475,8 @@ function applyPageGatewayEvent(
           }
           if (terminalPayload && sessionMatches) {
             clearPendingQueueItemsForRun(state, terminalPayload.runId);
+            // Bypass cached usage after each run; split panes share the SWR recheck.
+            void refreshChatModelAuthStatus(state, terminalPayload.runId);
           }
           if (shouldRefreshPullRequests && payload) {
             refreshPullRequestsForFinalReply(state, payload.runId, payload.message);

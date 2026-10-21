@@ -3,7 +3,11 @@ import { createDeferred } from "../../../test/helpers/promise.js";
 import type { GatewayBrowserClient } from "../api/gateway.ts";
 import type { ModelAuthStatusResult } from "../api/types.ts";
 import { invalidateModelAuthStatusRequests } from "./model-auth-request-state.ts";
-import { listEffectiveModelAuthProviders, loadModelAuthStatus } from "./model-auth.ts";
+import {
+  listEffectiveModelAuthProviders,
+  loadModelAuthStatus,
+  loadModelAuthStatusAfterRun,
+} from "./model-auth.ts";
 
 const status = (ts: number): ModelAuthStatusResult => ({ ts, providers: [] });
 
@@ -37,6 +41,9 @@ describe("model auth status reads", () => {
     await loadModelAuthStatus(client, { agentId: "main" });
     for (const boundary of [expiresAt - 24 * 60 * 60_000, expiresAt - 5 * 60_000, expiresAt]) {
       vi.setSystemTime(boundary - 1);
+      // Usage can expire between distant credential boundaries. Prime a fresh
+      // response, then prove the earlier credential deadline still wins.
+      await loadModelAuthStatus(client, { agentId: "main" });
       const before = request.mock.calls.length;
       await loadModelAuthStatus(client, { agentId: "main" });
       expect(request).toHaveBeenCalledTimes(before);
@@ -47,9 +54,9 @@ describe("model auth status reads", () => {
       expect(request).toHaveBeenCalledTimes(before + 1);
       expect(results[0]?.providers[0]?.status).toBe(boundary === expiresAt ? "expired" : "ok");
     }
-    vi.setSystemTime(expiresAt + 60_000);
+    vi.setSystemTime(expiresAt + 59_999);
     await loadModelAuthStatus(client, { agentId: "main" });
-    expect(request).toHaveBeenCalledTimes(4);
+    expect(request).toHaveBeenCalledTimes(7);
   });
 
   it.each([-3_600_000, 3_600_000])(
@@ -229,4 +236,35 @@ describe("listEffectiveModelAuthProviders", () => {
     ]);
     expect(merged?.apiKey).toEqual({ source: "env", envVar: "GEMINI_API_KEY" });
   });
+});
+
+it("does not recheck post-run usage after all presenting owners retire", async () => {
+  vi.useFakeTimers();
+  let current = true;
+  const initial: ModelAuthStatusResult = {
+    ts: Date.now(),
+    providers: [
+      {
+        provider: "openai",
+        displayName: "OpenAI",
+        status: "ok",
+        profiles: [],
+        usage: { providerId: "openai", windows: [{ label: "5h", usedPercent: 1 }] },
+      },
+    ],
+  };
+  const request = vi.fn(async () => initial);
+  const client = { request } as unknown as GatewayBrowserClient;
+  const result = loadModelAuthStatusAfterRun(client, {
+    agentId: "main",
+    runId: "retired-run",
+    isCurrent: () => current,
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  current = false;
+  await vi.advanceTimersByTimeAsync(5_500);
+  expect(await result).toBe(initial);
+  expect(request).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(request).toHaveBeenCalledTimes(1);
 });

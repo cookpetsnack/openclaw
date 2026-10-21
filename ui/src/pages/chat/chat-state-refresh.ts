@@ -12,7 +12,7 @@ import {
   retireChatMetadataRefresh,
 } from "../../lib/chat/chat-metadata-store.ts";
 import { formatUiError } from "../../lib/format-error.ts";
-import { loadModelAuthStatus } from "../../lib/model-auth.ts";
+import { loadModelAuthStatus, loadModelAuthStatusAfterRun } from "../../lib/model-auth.ts";
 import { hasUnrestrictedModelCatalogSnapshot } from "../../lib/model-catalog-cache.ts";
 import { loadModelCatalog, peekModelCatalog } from "../../lib/model-catalog-store.ts";
 import { isSessionRunStateActive } from "../../lib/session-run-state.ts";
@@ -368,20 +368,24 @@ function refreshChatSessionFacts(host: ChatPageHost, binding: ChatMetadataBindin
   return promise;
 }
 
-export async function refreshChatModelAuthStatus(host: ChatPageHost) {
+export async function refreshChatModelAuthStatus(host: ChatPageHost, runId?: string) {
   if (!host.client || !host.connected) {
     return;
   }
   const client = host.client;
   const connectionIsCurrent = captureChatConnectionOwner(host);
   const agentId = resolveChatAgentId(host);
+  const sessionKey = host.sessionKey;
   const requestVersion = ++host.modelAuthStatusRequestVersion;
   const ownsRequest = () =>
     connectionIsCurrent() &&
     host.modelAuthStatusRequestVersion === requestVersion &&
+    host.sessionKey === sessionKey &&
     resolveChatAgentId(host) === agentId;
   try {
-    const result = await loadModelAuthStatus(client, { agentId });
+    const result = runId
+      ? await loadModelAuthStatusAfterRun(client, { agentId, runId, isCurrent: ownsRequest })
+      : await loadModelAuthStatus(client, { agentId });
     if (!ownsRequest()) {
       return;
     }
@@ -390,7 +394,10 @@ export async function refreshChatModelAuthStatus(host: ChatPageHost) {
     if (!ownsRequest()) {
       return;
     }
-    host.modelAuthStatusResult = { ts: 0, providers: [] };
+    // Auxiliary post-run failures must not erase the last displayed usage.
+    if (!runId) {
+      host.modelAuthStatusResult = { ts: 0, providers: [] };
+    }
   }
 }
 

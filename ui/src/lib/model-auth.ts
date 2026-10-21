@@ -7,6 +7,7 @@ import { authReads, type ModelAuthRequest } from "./model-auth-request-state.ts"
 import { subscribeToSharedRequest } from "./shared-request-subscription.ts";
 
 const EMPTY_AUTH_STATUS: ModelAuthStatusResult = { ts: 0, providers: [] };
+const USAGE_STATUS_MAX_AGE_MS = 60_000;
 const authRefreshDeadlines = new WeakMap<ModelAuthStatusResult, number | undefined>();
 /** Map credential-runtime aliases onto the provider card/attention identity. */
 export function canonicalModelAuthProviderId(provider: string): string {
@@ -126,7 +127,7 @@ export async function loadModelAuthStatus(
   if (state.refreshes > 0) {
     return await request(opts.signal);
   }
-  // Connection-owned reads survive presenter unmounts until an auth publication invalidates them.
+  // Connection-owned reads survive presenter unmounts, but usage must not live until token expiry.
   const requests = state.entries;
   const agentId = opts.agentId;
   let pending = requests.get(agentId);
@@ -135,6 +136,7 @@ export async function loadModelAuthStatus(
     pending = undefined;
   }
   if (!pending) {
+    const requestedAt = Date.now();
     const shared: ModelAuthRequest = { promise: request(), subscribers: new Set<object>() };
     requests.set(agentId, shared);
     const finish = () => {
@@ -148,9 +150,75 @@ export async function loadModelAuthStatus(
         finish();
       } else if (requests.get(agentId) === shared) {
         shared.refreshAt = nextModelAuthStatusRefreshAt(result);
+        // Refreshable credentials can have no usage yet on a cold Gateway read.
+        // Bound those responses too, without changing credential-warning deadlines.
+        if (
+          result.providers.some((provider) => provider.usage || isMonitoredAuthProvider(provider))
+        ) {
+          shared.refreshAt = Math.min(
+            shared.refreshAt ?? Infinity,
+            requestedAt + USAGE_STATUS_MAX_AGE_MS,
+          );
+        }
       }
     }, finish);
     pending = shared;
   }
   return await subscribeToSharedRequest(pending, {}, opts.signal);
+}
+
+// A terminal event reaches every split pane. Share its forced read and single
+// SWR follow-up per connection, agent, and run, rather than one timer per view.
+const postRunReads = new WeakMap<
+  GatewayBrowserClient,
+  Map<
+    string,
+    {
+      promise: Promise<ModelAuthStatusResult>;
+      consumers: Set<() => boolean>;
+    }
+  >
+>();
+
+export async function loadModelAuthStatusAfterRun(
+  client: GatewayBrowserClient,
+  opts: { agentId: string; runId: string; isCurrent: () => boolean },
+): Promise<ModelAuthStatusResult> {
+  let reads = postRunReads.get(client);
+  if (!reads) {
+    reads = new Map();
+    postRunReads.set(client, reads);
+  }
+  const key = JSON.stringify([opts.agentId, opts.runId]);
+  let pending = reads.get(key);
+  if (!pending) {
+    const consumers = new Set<() => boolean>();
+    const promise = (async () => {
+      const initial = await loadModelAuthStatus(client, { agentId: opts.agentId, refresh: true });
+      if (
+        !initial.providers.some((provider) => provider.usage || isMonitoredAuthProvider(provider))
+      ) {
+        return initial;
+      }
+      // No usage-freshness marker is exposed: even refresh:true can return the
+      // previous snapshot. Allow the provider's five-second deadline, then read
+      // once without triggering another forced provider refresh. Never poll idle chats.
+      await new Promise<void>((resolve) => {
+        setTimeout(resolve, 5_500);
+      });
+      if (![...consumers].some((isCurrent) => isCurrent())) {
+        return initial;
+      }
+      authReads.get(client)?.entries.delete(opts.agentId);
+      return await loadModelAuthStatus(client, { agentId: opts.agentId });
+    })().finally(() => reads.delete(key));
+    pending = { promise, consumers };
+    reads.set(key, pending);
+  }
+  pending.consumers.add(opts.isCurrent);
+  try {
+    return await pending.promise;
+  } finally {
+    pending.consumers.delete(opts.isCurrent);
+  }
 }
