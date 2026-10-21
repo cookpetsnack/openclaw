@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import fs, { type FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { createInterface } from "node:readline";
-import { afterEach, describe, expect, it, type TestContext } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { createFixtureLifetime } from "../../../test/helpers/fixture-lifetime.js";
 import { waitForDead, waitForFile } from "../../../test/helpers/process-wait.js";
 import {
@@ -17,7 +17,7 @@ import {
   WorkerTunnelOwnerDisconnectedError,
   type WorkerWorkspaceCommand,
 } from "./tunnel-contract.js";
-import { BUNDLE_HASH, prepareLocalWorkspaceRsyncBoundary } from "./tunnel.test-support.js";
+import { BUNDLE_HASH, prepareLocalWorkspaceRsyncBoundary, success } from "./tunnel.test-support.js";
 import { AcceptedWorkspacePublicationIndeterminateError } from "./workspace-accepted-publication.js";
 import {
   createAcceptedWorkspacePublisher,
@@ -41,10 +41,6 @@ const tempDirs = useAutoCleanupTempDirTracker((cleanup) =>
     cleanup();
   }),
 );
-// Vitest abandons the body at timeout; keep its cleanup joined before removing fixture inputs.
-const ownFixture = (body: (context: TestContext) => Promise<void>) => (context: TestContext) =>
-  lifetime.run(() => body(context));
-
 function createGateRelease(gate: FileHandle, newline = false) {
   let releasing: Promise<void> | undefined;
   return (message = "release") =>
@@ -87,15 +83,7 @@ function observeChild(
 }
 
 function result(overrides: Partial<SpawnResult> = {}): SpawnResult {
-  return {
-    stdout: "",
-    stderr: "",
-    code: 0,
-    signal: null,
-    killed: false,
-    termination: "exit",
-    ...overrides,
-  };
+  return { ...success(), ...overrides };
 }
 
 function commandFailure(operation: string, code = 255) {
@@ -535,88 +523,74 @@ describe("accepted workspace publication", () => {
     },
   );
 
-  it(
-    "settles a still-running apply after SSH loses its exit status",
-    ownFixture(async ({ signal }) => {
-      const fixture = await gatedApplyFixture(signal);
-      const {
-        root,
-        local,
-        workspace,
-        settleStarted,
-        transactionCalls,
-        manifestCalls,
-        releaseApply,
-        publisher,
-      } = fixture;
-      const publishing = publisher.publishAcceptedManifest(acceptedPublication);
-      const publishingSettled = observeSettlement(publishing);
-      try {
-        await withinTest(
-          awaitGateBeforeSettlement(
-            settleStarted.promise,
-            publishing,
-            `timeout waiting for ${path.join(root, "apply-started")}`,
-          ),
-          signal,
-        );
-        expectTransactions(transactionCalls, ["begin", "apply", "settle"], "never");
-        expect(manifestCalls).toEqual(["idempotent"]);
-        expect(publishingSettled()).toBe(false);
-        await expect(fs.access(path.join(workspace, "result.txt"))).rejects.toThrow();
-
-        await releaseApply();
-        await expect(withinTest(publishing, signal)).resolves.toBeUndefined();
-        await fixture.expectApplied();
-        expectTransactions(transactionCalls, ["begin", "apply", "settle", "commit"], "never");
-        expect(manifestCalls).toEqual(["idempotent", "idempotent"]);
-        await expect(resultContents(workspace)).resolves.toBe("local\n");
-        await expect(resultContents(local)).resolves.toBe("local\n");
-
-        await fixture.recover();
-        expect(transactionCalls.map((entry) => entry.action)).toEqual([
-          "begin",
-          "apply",
-          "settle",
-          "commit",
-          "recover",
-        ]);
-        expect(transactionCalls.at(-1)?.transportRetry).toBe("never");
-        await fixture.expectNoTransactionArtifacts();
-      } finally {
-        await releaseApply().catch(() => undefined);
-        await fixture.applyExited?.catch(() => undefined);
-        await publishing.catch(() => undefined);
-      }
-    }),
-  );
-
-  it(
-    "leaves publication pending when settle reaches its lock deadline behind a live apply",
-    ownFixture(async ({ signal }) => {
-      const fixture = await gatedApplyFixture(signal, true);
-      const { workspace, transactionCalls, releaseApply, publisher } = fixture;
-      const publishing = publisher.publishAcceptedManifest(acceptedPublication);
-      try {
-        const thrown = await withinTest(publishing, signal).catch((error: unknown) => error);
-
-        expect(thrown).toBeInstanceOf(AcceptedWorkspacePublicationIndeterminateError);
-        expectTransactions(transactionCalls, ["begin", "apply", "settle"]);
-        await expect(fs.access(path.join(workspace, "result.txt"))).rejects.toThrow();
-
-        await releaseApply();
-        await fixture.expectApplied();
-        await expect(resultContents(workspace)).resolves.toBe("local\n");
-
-        await fixture.recover();
-        await expect(resultContents(workspace)).resolves.toBe("worker\n");
-        await fixture.expectNoTransactionArtifacts();
-      } finally {
-        await releaseApply().catch(() => undefined);
-        await fixture.applyExited?.catch(() => undefined);
-        await publishing.catch(() => undefined);
-      }
-    }),
+  it.for([false, true])(
+    "settles a still-running apply after losing SSH status (lock deadline: %s)",
+    (deadline, { signal }) =>
+      lifetime.run(async () => {
+        const fixture = await gatedApplyFixture(signal, deadline);
+        const {
+          root,
+          local,
+          workspace,
+          settleStarted,
+          transactionCalls,
+          manifestCalls,
+          releaseApply,
+          publisher,
+        } = fixture;
+        const publishing = publisher.publishAcceptedManifest(acceptedPublication);
+        const publishingSettled = observeSettlement(publishing);
+        try {
+          if (deadline) {
+            await expect(withinTest(publishing, signal)).rejects.toBeInstanceOf(
+              AcceptedWorkspacePublicationIndeterminateError,
+            );
+            expectTransactions(transactionCalls, ["begin", "apply", "settle"]);
+          } else {
+            await withinTest(
+              awaitGateBeforeSettlement(
+                settleStarted.promise,
+                publishing,
+                `timeout waiting for ${path.join(root, "apply-started")}`,
+              ),
+              signal,
+            );
+            expectTransactions(transactionCalls, ["begin", "apply", "settle"], "never");
+            expect(manifestCalls).toEqual(["idempotent"]);
+            expect(publishingSettled()).toBe(false);
+          }
+          await expect(fs.access(path.join(workspace, "result.txt"))).rejects.toThrow();
+          await releaseApply();
+          if (!deadline) {
+            await expect(withinTest(publishing, signal)).resolves.toBeUndefined();
+          }
+          await fixture.expectApplied();
+          await expect(resultContents(workspace)).resolves.toBe("local\n");
+          if (!deadline) {
+            expectTransactions(transactionCalls, ["begin", "apply", "settle", "commit"], "never");
+            expect(manifestCalls).toEqual(["idempotent", "idempotent"]);
+            await expect(resultContents(local)).resolves.toBe("local\n");
+          }
+          await fixture.recover();
+          if (deadline) {
+            await expect(resultContents(workspace)).resolves.toBe("worker\n");
+          } else {
+            expect(transactionCalls.map((entry) => entry.action)).toEqual([
+              "begin",
+              "apply",
+              "settle",
+              "commit",
+              "recover",
+            ]);
+            expect(transactionCalls.at(-1)?.transportRetry).toBe("never");
+          }
+          await fixture.expectNoTransactionArtifacts();
+        } finally {
+          await releaseApply().catch(() => undefined);
+          await fixture.applyExited?.catch(() => undefined);
+          await publishing.catch(() => undefined);
+        }
+      }),
   );
 
   it("keeps an unobservable apply pending when settlement is unobservable", async () => {

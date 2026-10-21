@@ -22,7 +22,10 @@ import { createWorkerPlacementReclaim } from "./placement-reclaim.js";
 import { placementTurnOwner } from "./placement-record.js";
 import { createRepositoryWorkspaceMutationService } from "./repository-workspace-mutation.js";
 import { syncSessionRepositoryWorkspace } from "./repository-workspace-startup.js";
-import { readSessionRepositoryArtifacts } from "./session-repository-checkpoints.js";
+import {
+  readSessionRepositoryArtifacts,
+  withSessionRepositoryCheckpoint,
+} from "./session-repository-checkpoints.js";
 import type { WorkerTunnelHandle } from "./tunnel-contract.js";
 import {
   attachedEnvironment,
@@ -122,6 +125,7 @@ export function useRepositoryWorkspaceResultFixture() {
       runSetupScript,
       assertCurrent: () => {},
     });
+    const current = () => store.get(repository.workspaceId);
     await upsertSessionEntryCore(sessionTarget, {
       sessionId: SESSION_ID,
       updatedAt: Date.now(),
@@ -178,7 +182,7 @@ export function useRepositoryWorkspaceResultFixture() {
       assertCurrent: () => {},
     });
     const remote = synced.remoteWorkspaceDir;
-    const initialCheckpointRef = (await store.get(repository.workspaceId))!.checkpointRef;
+    const initialCheckpointRef = (await current())!.checkpointRef;
     await seedActivePlacement(executionMode, remote, synced.manifestRef);
     async function beginTurn(claimId: string, markResultPending = true) {
       const placement = placements.get(SESSION_ID);
@@ -244,7 +248,7 @@ export function useRepositoryWorkspaceResultFixture() {
     };
     const resolveWorkspace = async () => ({
       kind: "repository" as const,
-      repository: (await store.get(repository.workspaceId))!,
+      repository: (await current())!,
     });
     const operations = { placements, environments, resolveWorkspace, workspaceOperations };
     const mutations = createRepositoryWorkspaceMutationService(operations);
@@ -282,6 +286,9 @@ export function useRepositoryWorkspaceResultFixture() {
       remote,
       store,
       repository,
+      current,
+      withCheckpoint: (use: Parameters<typeof withSessionRepositoryCheckpoint>[1]) =>
+        withSessionRepositoryCheckpoint({ workspaceId: repository.workspaceId }, use),
       initialCheckpointRef,
       beginTurn,
       finishTurn,

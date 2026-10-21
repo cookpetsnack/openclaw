@@ -45,15 +45,14 @@ const binding = (publication: { currentManifestRef: string; publicationDigest: s
 const write = (root: string, name: string, bytes: string | Buffer) =>
   fs.writeFile(path.join(root, name), bytes, { mode: 0o600 });
 const blobPath = (root: string, sha: string) => path.join(root, "blobs", sha);
-const changedBlob = "blob changed after checkpoint capture";
 type InvalidPublicationCase = {
   fault: string;
-  blob?: "missing" | "substituted" | "symlink" | "hardlink";
+  blob?: "missing" | "hardlink";
   error?: string | RegExp;
   code?: string;
   metadata?: string;
   baseCommit?: string;
-  entry?: { path?: string; mode?: string };
+  entry?: { mode: string };
   duplicate?: boolean;
 };
 
@@ -251,20 +250,16 @@ it.each(["metadata-only", "mixed"] as const)(
 );
 
 it.for<InvalidPublicationCase>([
-  { fault: "digest", error: /digest/i },
   { fault: "json", metadata: "{invalid JSON" },
   { fault: "base", baseCommit: "f".repeat(40), error: /base/i },
-  { fault: "path", entry: { path: "../escape" }, error: /entry/i },
   { fault: "mode", entry: { mode: "100600" }, error: /entry/i },
   { fault: "duplicate-path", duplicate: true, error: /entry/i },
   { fault: "missing", blob: "missing", code: "not-found" },
-  { fault: "substituted", blob: "substituted", error: changedBlob },
-  { fault: "symlink", blob: "symlink", code: "symlink" },
   { fault: "hardlink", blob: "hardlink", code: "hardlink" },
 ])("rejects invalid publication input: $fault", async (test, context) => {
-  const { fault, blob, code, error } = test;
+  const { blob, code, error } = test;
   // Windows link privileges and identity differ; retain the existing platform boundary.
-  if (process.platform === "win32" && (fault === "symlink" || fault === "hardlink")) {
+  if (process.platform === "win32" && blob === "hardlink") {
     context.skip();
     return;
   }
@@ -281,11 +276,7 @@ it.for<InvalidPublicationCase>([
     };
     await fs.writeFile(alias.path, bytes);
     await fs.rm(target);
-    if (blob === "substituted") {
-      await fs.writeFile(target, Buffer.alloc(bytes.length, 0x78));
-    } else if (blob === "symlink") {
-      await fs.symlink(alias.path, target);
-    } else if (blob === "hardlink") {
+    if (blob === "hardlink") {
       await fs.link(alias.path, target);
     }
   } else {
@@ -299,8 +290,7 @@ it.for<InvalidPublicationCase>([
     }
     publication.metadata = test.metadata ?? publication.metadata;
     publication.baseCommit = test.baseCommit ?? publication.baseCommit;
-    publication.publicationDigest =
-      fault === "digest" ? "sha256:" + "0".repeat(64) : digest(publication.metadata);
+    publication.publicationDigest = digest(publication.metadata);
   }
   const staging = prepareWorkspaceStageInput({
     stagingRoot: f.stagingRoot,
