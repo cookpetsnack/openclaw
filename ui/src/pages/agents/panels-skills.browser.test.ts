@@ -44,8 +44,8 @@ function skillsParams(skills: SkillStatusEntry[], overrides: Partial<Params> = {
 
 describe("agents skills panel (browser)", () => {
   it("shows inherited skills while resetting and restores the allowlist after rejection before retry", async () => {
-    const first = deferred<void>();
-    const retry = deferred<void>();
+    const first = deferred();
+    const retry = deferred();
     const onClear = vi.fn().mockReturnValueOnce(first.promise).mockReturnValueOnce(retry.promise);
     const container = document.createElement("div");
     const params = skillsParams(
@@ -248,7 +248,7 @@ describe("agents skills panel (browser)", () => {
   });
 
   it("retires optimistic reset presentation when the selected agent changes", async () => {
-    const completion = deferred<void>();
+    const completion = deferred();
     const container = document.createElement("div");
     const params = skillsParams([createSkill({ name: "github", source: "openclaw-managed" })], {
       configForm: { agents: { entries: { main: { skills: [] }, research: { skills: [] } } } },

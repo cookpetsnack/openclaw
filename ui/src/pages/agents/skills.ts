@@ -114,7 +114,7 @@ export function createAgentSkillsReset(options: {
     },
     clear(agentId: string) {
       if (!options.canReset()) {
-        return;
+        return undefined;
       }
       const { state, context } = options;
       const client = state.client;
@@ -122,14 +122,14 @@ export function createAgentSkillsReset(options: {
       const agents = context.agents;
       const runtimeConfig = context.runtimeConfig;
       if (!client) {
-        return;
+        return undefined;
       }
       const canDispatch = () =>
         context.runtimeConfig === runtimeConfig &&
         options.isCurrent(client, generation, agentId, agents) &&
         options.canReset();
       if (!canDispatch()) {
-        return;
+        return undefined;
       }
       const retirement = lifetime.promise;
       const completion = clearAgentSkillFilter(runtimeConfig, agentId, canDispatch).then(
