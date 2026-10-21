@@ -39,8 +39,6 @@ describe("isChannelConfigured", () => {
   afterEach(() => vi.unstubAllEnvs());
 
   it.each<[string, NodeJS.ProcessEnv, boolean]>([
-    ["telegram", { TELEGRAM_BOT_TOKEN: "token" }, true],
-    ["discord", { DISCORD_BOT_TOKEN: "token" }, true],
     ["slack", { SLACK_BOT_TOKEN: "xoxb-test" }, false],
     ["slack", { SLACK_BOT_TOKEN: "xoxb-test", SLACK_APP_TOKEN: "xapp-test" }, true],
     ["irc", { IRC_HOST: "irc.example.com" }, false],

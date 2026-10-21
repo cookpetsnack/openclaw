@@ -75,26 +75,20 @@ describe("config schema regressions", () => {
     expect(config.tools?.exec?.approvalRunningNoticeMs).toBe(0);
   });
 
-  it("accepts exact main bindings when the roster omits main (#89419)", () => {
-    expect(validateBinding("main", { alpha: { model: "anthropic/claude-3-5-sonnet" } }).ok).toBe(
-      true,
-    );
-  });
-
-  it("rejects normalized main variants omitted from the roster", () => {
-    const result = validateBinding("MAIN", { alpha: { model: "anthropic/claude-3-5-sonnet" } });
-    expect(result.ok).toBe(false);
+  it.each([
+    ["main", "alpha", true],
+    ["MAIN", "alpha", false],
+    ["MAIN", "MAIN", true],
+  ] as const)("validates binding %s with roster entry %s (#89419)", (agentId, configured, ok) => {
+    const result = validateBinding(agentId, {
+      [configured]: { model: "anthropic/claude-3-5-sonnet" },
+    });
+    expect(result.ok).toBe(ok);
     if (!result.ok) {
       expect(result.issues.some((issue) => issue.message.includes('Unknown agent id "MAIN"'))).toBe(
         true,
       );
     }
-  });
-
-  it("accepts an explicitly configured main variant", () => {
-    expect(validateBinding("MAIN", { MAIN: { model: "anthropic/claude-3-5-sonnet" } }).ok).toBe(
-      true,
-    );
   });
 
   it("accepts persisted Foundry thinkingLevelMap (#91011)", () => {
@@ -116,23 +110,12 @@ describe("config schema regressions", () => {
     validConfig({ models: { providers: { "microsoft-foundry": { models: [model] } } } });
   });
 
-  it.each([
-    {
-      scope: "global",
-      path: "tools",
-      config: { tools: { allow: ["group:fs"], alsoAllow: ["lobster"] } },
-    },
-    {
-      scope: "per-agent",
-      path: "agents.entries.main.tools",
-      config: agentTools({ allow: ["group:fs"], alsoAllow: ["lobster"] }),
-    },
-  ])("rejects allow + alsoAllow in the $scope scope", ({ config, path }) => {
+  it.each(["tools", "agents.entries.main.tools"])("rejects allow + alsoAllow at %s", (path) => {
+    const tools = { allow: ["group:fs"], alsoAllow: ["lobster"] };
+    const config = path === "tools" ? { tools } : agentTools(tools);
     const result = validateConfigObject(config);
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.issues.map((issue) => issue.path)).toContain(path);
-    }
+    assert(!result.ok);
+    expect(result.issues.map((issue) => issue.path)).toContain(path);
   });
 
   it("allows profile + alsoAllow", () => {

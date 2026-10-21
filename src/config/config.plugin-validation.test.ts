@@ -143,6 +143,16 @@ describe("config plugin validation", () => {
         },
       },
     );
+  const codexMarketplace = (overrides: Record<string, unknown> = {}) => ({
+    marketplaceName: "openai-curated",
+    pluginName: "github",
+    ...overrides,
+  });
+  const destructivePolicy = (policy: string, github?: Record<string, unknown>) => ({
+    enabled: true,
+    allow_destructive_actions: policy,
+    plugins: github ? { github: codexMarketplace(github) } : {},
+  });
 
   const writeInstalledRecords = (
     stateDir: string,
@@ -242,15 +252,13 @@ describe("config plugin validation", () => {
       deny: ["missing-deny"],
       slots: { memory: "missing-slot" },
     });
-    expect(res.ok).toBe(false);
-    if (!res.ok) {
-      expectMessage(res.issues, "plugins.slots.memory", "plugin not found: missing-slot");
-      expect(res.warnings.filter((warning) => warning.path.startsWith("plugins."))).toEqual([
-        diagnostic("plugins.entries.missing-plugin", stalePluginMessage("missing-plugin")),
-        diagnostic("plugins.allow", stalePluginMessage("missing-allow")),
-        diagnostic("plugins.deny", stalePluginMessage("missing-deny")),
-      ]);
-    }
+    expectInvalid(res);
+    expectMessage(res.issues, "plugins.slots.memory", "plugin not found: missing-slot");
+    expect(res.warnings.filter((warning) => warning.path.startsWith("plugins."))).toEqual([
+      diagnostic("plugins.entries.missing-plugin", stalePluginMessage("missing-plugin")),
+      diagnostic("plugins.allow", stalePluginMessage("missing-allow")),
+      diagnostic("plugins.deny", stalePluginMessage("missing-deny")),
+    ]);
   });
 
   it.each([
@@ -292,10 +300,11 @@ describe("config plugin validation", () => {
       model: modelSelection(primary),
       subagents: { model: primary },
     });
-    const agents = (
+    const withAgents = (
       defaults: Record<string, unknown>,
       entries: Record<string, unknown> = { openclaw: {} },
-    ) => ({ defaults, entries });
+      rest: Record<string, unknown> = {},
+    ) => ({ ...rest, agents: { defaults, entries } });
     const explicitAgents = (
       entries: Record<string, unknown>,
       defaults: Record<string, unknown> = { systemAgent: { agentId: "openclaw" } },
@@ -372,29 +381,26 @@ describe("config plugin validation", () => {
     it.each([
       [
         "does not require Codex for a default Decision model beside non-OpenAI chat",
-        { agents: agents({ ...agentWithSubagent(anthropic), decisionModel: "openai/gpt-6-luna" }) },
+        withAgents({ ...agentWithSubagent(anthropic), decisionModel: "openai/gpt-6-luna" }),
         false,
       ],
       [
         "does not require Codex for a per-agent pinned Decision model",
-        {
-          agents: agents(agentWithSubagent(anthropic), {
-            openclaw: { decisionModel: "openai/gpt-6-luna@openai:fixture" },
-          }),
-        },
+        withAgents(agentWithSubagent(anthropic), {
+          openclaw: { decisionModel: "openai/gpt-6-luna@openai:fixture" },
+        }),
         false,
       ],
       [
         "still requires Codex for the same model selected for chat",
-        { agents: agents(agentWithSubagent("openai/gpt-6-luna")) },
+        withAgents(agentWithSubagent("openai/gpt-6-luna")),
         true,
       ],
       [
         "keeps channel targets named decisionModel on the chat diagnostic path",
-        {
-          agents: agents(agentWithSubagent(anthropic)),
+        withAgents(agentWithSubagent(anthropic), undefined, {
           channels: { modelByChannel: { telegram: { decisionModel: "openai/gpt-6-luna" } } },
-        },
+        }),
         true,
       ],
       [
@@ -412,41 +418,34 @@ describe("config plugin validation", () => {
       ],
       [
         "does not inherit default fallbacks after a listed agent selects its own primary",
-        {
-          agents: agents(
-            { model: modelSelection(openai, [codex]) },
-            { worker: { model: { primary: anthropic } } },
-          ),
-        },
+        withAgents(
+          { model: modelSelection(openai, [codex]) },
+          { worker: { model: { primary: anthropic } } },
+        ),
         false,
       ],
       [
         "uses a listed-agent subagent model before the default subagent model",
-        {
-          agents: agents(
-            { model: modelSelection(anthropic), subagents: { model: codex } },
-            { openclaw: { subagents: { model: anthropic } } },
-          ),
-        },
+        withAgents(
+          { model: modelSelection(anthropic), subagents: { model: codex } },
+          { openclaw: { subagents: { model: anthropic } } },
+        ),
         false,
       ],
       [
         "warns when a channel model override needs Codex",
-        {
-          agents: agents({ model: modelSelection(anthropic) }),
+        withAgents({ model: modelSelection(anthropic) }, undefined, {
           channels: { modelByChannel: { telegram: { default: codex } } },
-        },
+        }),
         true,
       ],
       [
         "does not warn for a fully shadowed default exact Codex policy",
-        {
-          models: providerModels("pi"),
-          agents: agents(
-            { model: modelSelection(openai), models: runtimePolicy(openai, "codex") },
-            { openclaw: { models: runtimePolicy(openai, "pi") } },
-          ),
-        },
+        withAgents(
+          { model: modelSelection(openai), models: runtimePolicy(openai, "codex") },
+          { openclaw: { models: runtimePolicy(openai, "pi") } },
+          { models: providerModels("pi") },
+        ),
         false,
       ],
       [
@@ -475,15 +474,16 @@ describe("config plugin validation", () => {
       ],
       [
         "does not warn when exact agent policy overrides an automatic OpenAI provider model route",
-        {
-          models: createPiProviderModels("https://api.openai.com/v1", "auto"),
-          agents: agents({
+        withAgents(
+          {
             models: {
               ...runtimePolicy("openai/*", "pi"),
               ...runtimePolicy("openai/gpt-5.5", "pi"),
             },
-          }),
-        },
+          },
+          undefined,
+          { models: createPiProviderModels("https://api.openai.com/v1", "auto") },
+        ),
         false,
       ],
       [
@@ -496,9 +496,7 @@ describe("config plugin validation", () => {
     });
 
     it("warns when the utility model needs Codex", () => {
-      expectCodexRequirement({
-        agents: agents({ model: modelSelection(anthropic), utilityModel: codex }),
-      });
+      expectCodexRequirement(withAgents({ model: modelSelection(anthropic), utilityModel: codex }));
     });
 
     it("keeps the two-argument diagnostic API correct for a legacy list", () => {
@@ -520,10 +518,9 @@ describe("config plugin validation", () => {
       "uses provider %s / wildcard %s precedence",
       (providerRuntime, wildcardRuntime, warns) => {
         expectCodexRequirement(
-          {
+          withAgents({ models: runtimePolicy("openai/*", wildcardRuntime) }, undefined, {
             models: providerModels(providerRuntime),
-            agents: agents({ models: runtimePolicy("openai/*", wildcardRuntime) }),
-          },
+          }),
           warns,
         );
       },
@@ -883,17 +880,15 @@ describe("config plugin validation", () => {
         }),
       }),
     });
-    expect(res.ok).toBe(true);
-    if (res.ok) {
-      expect(res.config.bindings).toContainEqual({
-        agentId: "ops",
-        match: { channel: channelId, accountId: "*" },
-      });
-    }
+    expectValid(res);
+    expect(res.config.bindings).toContainEqual({
+      agentId: "ops",
+      match: { channel: channelId, accountId: "*" },
+    });
   });
 
   it("accepts dynamic Codex marketplaces and surfaces unsafe identifiers as diagnostics", () => {
-    const github = { enabled: true, marketplaceName: "openai-monorepo", pluginName: "github" };
+    const github = codexMarketplace({ enabled: true, marketplaceName: "openai-monorepo" });
     const config = { codexPlugins: { enabled: true, plugins: { github } } };
     expect(validateCodexConfig(config).ok).toBe(true);
 
@@ -918,46 +913,24 @@ describe("config plugin validation", () => {
   it("accepts ask destructive policy without dropping adjacent Codex plugin config", () => {
     const res = validateCodexConfig({
       codexDynamicToolsLoading: "direct",
-      codexPlugins: {
-        enabled: true,
-        allow_destructive_actions: "ask",
-        plugins: {
-          github: {
-            enabled: false,
-            marketplaceName: "openai-curated",
-            pluginName: "github",
-            allow_destructive_actions: "auto",
-          },
-        },
-      },
+      codexPlugins: destructivePolicy("ask", { enabled: false, allow_destructive_actions: "auto" }),
     });
     expect(res.ok).toBe(true);
   });
 
   it.each([
-    {
-      name: "global policy",
-      expectedPath: "plugins.entries.codex.config.codexPlugins.allow_destructive_actions",
-      codexPlugins: { enabled: true, allow_destructive_actions: "always", plugins: {} },
-    },
-    {
-      name: "per-plugin policy",
-      expectedPath:
-        "plugins.entries.codex.config.codexPlugins.plugins.github.allow_destructive_actions",
-      codexPlugins: {
-        enabled: true,
-        allow_destructive_actions: "ask",
-        plugins: {
-          github: {
-            marketplaceName: "openai-curated",
-            pluginName: "github",
-            allow_destructive_actions: "always",
-          },
-        },
-      },
-    },
-  ])("rejects old always destructive policy in the $name", ({ codexPlugins, expectedPath }) => {
+    ["global policy", "", destructivePolicy("always")],
+    [
+      "per-plugin policy",
+      "plugins.github.",
+      destructivePolicy("ask", { allow_destructive_actions: "always" }),
+    ],
+  ] as const)("rejects old always destructive policy in the %s", (_name, prefix, codexPlugins) => {
     const res = validateCodexConfig({ codexPlugins });
-    expectIssue(res, expectedPath, "invalid config");
+    expectIssue(
+      res,
+      `plugins.entries.codex.config.codexPlugins.${prefix}allow_destructive_actions`,
+      "invalid config",
+    );
   });
 });

@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { assert, describe, expect, it } from "vitest";
 import { INVALID_EXEC_SECRET_REF_IDS } from "../test-utils/secret-ref-test-vectors.js";
 import { validateConfigObjectRaw } from "./validation.js";
 
@@ -20,15 +20,13 @@ const secretRef = (source: string, id: string, providerId = "default") => ({
 
 function expectInvalidApiKey(apiKey: unknown, message: string) {
   const result = validateOpenAiApiKeyRef(apiKey);
-  expect(result.ok).toBe(false);
-  if (!result.ok) {
-    expect(
-      result.issues.some(
-        (issue) =>
-          issue.path.includes("models.providers.openai.apiKey") && issue.message.includes(message),
-      ),
-    ).toBe(true);
-  }
+  assert(!result.ok);
+  expect(
+    result.issues.some(
+      (issue) =>
+        issue.path.includes("models.providers.openai.apiKey") && issue.message.includes(message),
+    ),
+  ).toBe(true);
 }
 
 describe("config secret refs schema", () => {
@@ -70,10 +68,8 @@ describe("config secret refs schema", () => {
       },
     });
 
-    expect(result.ok).toBe(true);
-    if (result.ok) {
-      expect(result.config.secrets?.egressProxy).toEqual(egressProxy);
-    }
+    assert(result.ok);
+    expect(result.config.secrets?.egressProxy).toEqual(egressProxy);
   });
 
   it.each(["allowedHosts", "bypassHosts"])("rejects wildcard secret egress %s", (field) => {
@@ -115,12 +111,10 @@ describe("config secret refs schema", () => {
       },
     });
 
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(
-        result.issues.some((issue) => issue.path.includes("models.providers.openai.request.proxy")),
-      ).toBe(true);
-    }
+    assert(!result.ok);
+    expect(
+      result.issues.some((issue) => issue.path.includes("models.providers.openai.request.proxy")),
+    ).toBe(true);
   });
 
   it.each([

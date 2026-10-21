@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { assert, beforeEach, describe, expect, it, vi } from "vitest";
 import type { PluginManifestRecord, PluginManifestRegistry } from "../plugins/manifest-registry.js";
 import { clearPluginMetadataLifecycleCaches } from "../plugins/plugin-metadata-lifecycle.js";
 import { createPluginManifestRecordFixture as plugin } from "../plugins/plugin-metadata.test-support.js";
@@ -166,19 +166,17 @@ describe("config validation metadata", () => {
       feishuPlugin(objectSchema({ otherField: { type: "string" } }), "other-global-feishu"),
     );
     const result = validateFeishu({ unsupportedField: true });
-    expect(result.ok).toBe(false);
-    if (!result.ok) {
-      expect(result.issues).toContainEqual(
-        expect.objectContaining({
-          path: "channels.feishu",
-          message:
-            'invalid config for plugin openclaw-lark: must not have additional properties: "unsupportedField"',
-        }),
-      );
-      expect(result.issues.map((issue) => issue.message)).not.toContain(
-        'invalid config for plugin other-global-feishu: must not have additional properties: "unsupportedField"',
-      );
-    }
+    assert(!result.ok);
+    expect(result.issues).toContainEqual(
+      expect.objectContaining({
+        path: "channels.feishu",
+        message:
+          'invalid config for plugin openclaw-lark: must not have additional properties: "unsupportedField"',
+      }),
+    );
+    expect(result.issues.map((issue) => issue.message)).not.toContain(
+      'invalid config for plugin other-global-feishu: must not have additional properties: "unsupportedField"',
+    );
   });
 
   it.each([false, true])("materializes plugin defaults only in normal mode=%s", (materialized) => {
