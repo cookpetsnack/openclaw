@@ -147,6 +147,12 @@ export async function generateTeamShapeFixture(options: ReturnType<typeof parseT
       cron: { enabled: false },
       update: { checkOnStart: false },
       agents: {
+        ...(options.agents > 1
+          ? {
+              ownership: "explicit" as const,
+              defaults: { systemAgent: { agentId: "main" } },
+            }
+          : {}),
         entries: Object.fromEntries(
           Array.from({ length: options.agents }, (_, index) => [
             index === 0 ? "main" : `team-shape-agent-${index}`,
