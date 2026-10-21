@@ -8,6 +8,8 @@ import { calculateCost } from "../model-utils.js";
 import {
   extendResponsesMessageText,
   renderResponsesMessageText,
+  responsesMessageSources,
+  responsesTextSignature,
   type ResponsesMessageText,
 } from "../providers/openai-responses-message-text.js";
 import { resolveResponsesMessageSnapshotCollapse } from "../providers/openai-responses-stream-compat.js";
@@ -33,13 +35,13 @@ import type {
   Usage,
 } from "../types.js";
 import { appendAssistantMessageDiagnostic } from "../utils/diagnostics.js";
+import { withTextSignatureV1Sources } from "../utils/text-signature.js";
 import { captureOpenAIResponsesCompaction } from "./openai-responses-compaction-replay.js";
 import {
   OPENAI_RESPONSES_COMPACTION_REPLAY_TYPE,
   OPENAI_RESPONSES_REASONING_REPLAY_BLOCK_META_KEY,
   type OpenAIResponsesReasoningReplayMetadata,
 } from "./openai-responses-contracts.js";
-import { encodeTextSignatureV1 } from "./openai-responses-replay-internal.js";
 import { normalizeOpenAIResponsesReasoningReplayItem } from "./openai-responses-replay.js";
 import type { ResponsesOutputTracker } from "./openai-responses-stream-slots-internal.js";
 import type { ResponsesStreamOptions } from "./openai-responses-stream-types-internal.js";
@@ -197,9 +199,9 @@ export function createResponsesTerminalController(params: {
     if (started && contentIndex !== undefined) {
       const previousText = started.text;
       started.text = text;
-      if (!preserveSignature) {
-        started.textSignature = encodeTextSignatureV1(item.id, phase);
-      }
+      started.textSignature = preserveSignature
+        ? withTextSignatureV1Sources(started.textSignature, responsesMessageSources(rendered))
+        : responsesTextSignature(item.id, phase, rendered);
       params.setLastTextBlock({ block: started, index: contentIndex, phase, rendered });
       if (text.startsWith(previousText)) {
         const delta = text.slice(previousText.length);
@@ -219,13 +221,13 @@ export function createResponsesTerminalController(params: {
         text = rendered.text;
         previous.rendered = rendered;
         previous.block.text = text;
-        previous.block.textSignature = encodeTextSignatureV1(item.id, phase);
+        previous.block.textSignature = responsesTextSignature(item.id, phase, rendered);
         contentIndex = previous.index;
       } else {
         const newBlock: TextContent = {
           type: "text",
           text,
-          textSignature: encodeTextSignatureV1(item.id, phase),
+          textSignature: responsesTextSignature(item.id, phase, rendered),
         };
         blocks.push(newBlock);
         contentIndex = blocks.length - 1;

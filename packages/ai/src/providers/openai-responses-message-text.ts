@@ -1,4 +1,5 @@
 import { isRecord } from "@openclaw/normalization-core/record-coerce";
+import { encodeTextSignatureV1 } from "../utils/text-signature.js";
 
 export type ResponsesMessageText = {
   text: string;
@@ -54,6 +55,20 @@ export function renderResponsesMessageText(
     })
     .join("");
   return extendResponsesMessageText({ prose, citations }, previous);
+}
+
+/** The visible source links after provider prose; replay must strip them (text signature `sources`). */
+export function responsesMessageSources(text: ResponsesMessageText): string | undefined {
+  return text.text.length > text.prose.length ? text.text.slice(text.prose.length) : undefined;
+}
+
+/** Signature for a rendered Responses message, naming its source suffix for replay. */
+export function responsesTextSignature(
+  id: string,
+  phase: "commentary" | "final_answer" | undefined,
+  text: ResponsesMessageText,
+): string {
+  return encodeTextSignatureV1(id, phase, responsesMessageSources(text));
 }
 
 /** Merge source state only after matching cumulative provider prose, never formatted links. */

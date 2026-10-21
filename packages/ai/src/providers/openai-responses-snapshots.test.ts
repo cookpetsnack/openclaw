@@ -63,6 +63,15 @@ function textBlock(id: string, text: string, phase = "final_answer") {
   return { type: "text", text, textSignature: JSON.stringify({ v: 1, id, phase }) };
 }
 
+/** Rendered source links follow the prose; the signature names them so replay can strip them. */
+function citedBlock(id: string, prose: string, sources: string) {
+  return {
+    type: "text",
+    text: prose + sources,
+    textSignature: JSON.stringify({ v: 1, id, phase: "final_answer", sources }),
+  };
+}
+
 const completed = { type: "response.completed", response: { id: "resp_1", status: "completed" } };
 
 async function* responseEvents(events: readonly unknown[]) {
@@ -237,9 +246,9 @@ it.each(["streamed", "terminal-only"])(
       terminal,
     ]);
     const firstText = "Hello.\n\n[First](https://example.test/First)";
-    const finalText =
-      "Hello. More.\n\n[First](https://example.test/First) [Second](https://example.test/Second)";
-    expect(output.content).toEqual([textBlock("msg_2", finalText)]);
+    const sources = "\n\n[First](https://example.test/First) [Second](https://example.test/Second)";
+    const finalText = "Hello. More." + sources;
+    expect(output.content).toEqual([citedBlock("msg_2", "Hello. More.", sources)]);
     expect(eventTrace(events)).toBe(
       mode === "streamed"
         ? "text_start@0 text_delta@0 text_end@0 text_end@0"
@@ -282,7 +291,9 @@ it.each(["Hello.", "Changed.", "Hello. Changed."])(
     ]);
     const suffix = "\n\n[First](https://example.test/First)";
     const accepted = terminalProse === "Hello.";
-    expect(output.content).toEqual([textBlock("msg_2", "Hello. More." + (accepted ? suffix : ""))]);
+    expect(output.content).toEqual([
+      accepted ? citedBlock("msg_2", "Hello. More.", suffix) : textBlock("msg_2", "Hello. More."),
+    ]);
     expect(eventTrace(events)).toBe(
       "text_start@0 text_end@0 text_end@0" + (accepted ? " text_delta@0 text_end@0" : ""),
     );
@@ -297,7 +308,7 @@ it.each(["Hello.", "Changed.", "Hello. Changed."])(
     ).toEqual([
       textBlock("msg_1", "Hello."),
       textBlock("msg_2", "Hello. More."),
-      ...(accepted ? [textBlock("msg_2", "Hello. More." + suffix)] : []),
+      ...(accepted ? [citedBlock("msg_2", "Hello. More.", suffix)] : []),
     ]);
   },
 );
@@ -333,10 +344,11 @@ it.each(["First. More.", "Other. More."])(
         },
       },
     ]);
-    const annotated = "First.\n\n[First](https://example.test/First)";
+    const sources = "\n\n[First](https://example.test/First)";
+    const annotated = "First." + sources;
     const extendsLatest = nextProse === "Other. More.";
     expect(output.content).toEqual([
-      textBlock("msg_1", annotated),
+      citedBlock("msg_1", "First.", sources),
       ...(extendsLatest
         ? [textBlock("msg_3", nextProse)]
         : [textBlock("msg_2", "Other."), textBlock("msg_3", nextProse)]),

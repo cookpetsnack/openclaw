@@ -8,6 +8,7 @@ import type { ResponseOutputItem } from "openai/resources/responses/responses.js
 import {
   extendResponsesMessageText,
   renderResponsesMessageText,
+  responsesTextSignature,
 } from "../providers/openai-responses-message-text.js";
 import {
   AZURE_RESPONSES_TEXT_CONTENT_PART_TYPE,
@@ -576,9 +577,10 @@ export async function processResponsesStream<TApi extends Api>(
             );
             outputSlot.collapseCandidate.rendered = extended;
             outputSlot.collapseCandidate.block.text = extended.text;
-            outputSlot.collapseCandidate.block.textSignature = encodeTextSignatureV1(
+            outputSlot.collapseCandidate.block.textSignature = responsesTextSignature(
               item.id,
               phase,
+              extended,
             );
             stream.push({
               type: "text_end",
@@ -609,7 +611,7 @@ export async function processResponsesStream<TApi extends Api>(
               });
             }
             outputSlot.block.text = finalText;
-            outputSlot.block.textSignature = encodeTextSignatureV1(item.id, phase);
+            outputSlot.block.textSignature = responsesTextSignature(item.id, phase, rendered);
             const contentIndex = outputSlot.contentIndex;
             if (contentIndex === undefined) {
               throw new Error("Responses stream finalized text without a content index");
