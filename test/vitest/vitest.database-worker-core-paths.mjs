@@ -1049,6 +1049,7 @@ export const databaseWorkerCoreTestFiles = [
   "src/agents/harness/native-hook-relay-store.test.ts",
   "src/agents/harness/native-hook-relay.approval-wait.test.ts",
   "src/agents/harness/native-hook-relay.lifecycle.test.ts",
+  "src/agents/harness/native-hook-relay.observations.test.ts",
   "src/agents/harness/native-hook-relay.test.ts",
   "src/cli/native-hook-relay-cli.locator-worker.test.ts",
   "src/cli/command-execution-startup.test.ts",
@@ -1135,7 +1136,6 @@ export const databaseWorkerCoreTestFiles = [
   "src/plugins/management-service.install.test.ts",
 
   "src/plugins/installed-plugin-index-generation-precedence.test.ts",
-  "src/plugins/installed-plugin-index-read-state.test.ts",
   "src/plugins/installed-plugin-index-store.availability.test.ts",
   "src/plugins/installed-plugin-index-store.test.ts",
   "src/plugins/install-record-commit.sqlite.test.ts",
