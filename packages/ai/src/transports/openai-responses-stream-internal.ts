@@ -593,6 +593,7 @@ export async function processResponsesStream<TApi extends Api>(
               outputSlot.collapseCandidate.index,
               readResponsesOutputIndex(event) ?? outputSlot.outputIndex,
               true,
+              rendered.prose,
             );
           } else {
             if (!outputSlot.block) {
@@ -620,6 +621,7 @@ export async function processResponsesStream<TApi extends Api>(
               contentIndex,
               readResponsesOutputIndex(event) ?? outputSlot.outputIndex,
               true,
+              rendered.prose,
             );
             stream.push({
               type: "text_end",

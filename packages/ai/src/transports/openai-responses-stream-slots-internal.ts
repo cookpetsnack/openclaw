@@ -48,6 +48,7 @@ type ResponsesOutputState = {
   outputIndex?: number;
   contentIndex: number;
   completed: boolean;
+  completedProse?: string;
 };
 
 export type ResponsesOutputTracker = ReturnType<typeof createResponsesOutputTracker>;
@@ -146,6 +147,7 @@ export function createResponsesOutputTracker(params: {
       contentIndex: number,
       outputIndex?: number,
       completed = false,
+      completedProse?: string,
     ): void {
       const output: ResponsesOutputState = get(item, outputIndex) ?? {
         type: item.type,
@@ -153,6 +155,10 @@ export function createResponsesOutputTracker(params: {
         completed,
       };
       Object.assign(output, { contentIndex, completed });
+      if (completedProse !== undefined) {
+        // Collapsed message items share a public block, not their completed prose.
+        output.completedProse = completedProse;
+      }
       if (item.call_id) {
         output.callId = item.call_id;
       }

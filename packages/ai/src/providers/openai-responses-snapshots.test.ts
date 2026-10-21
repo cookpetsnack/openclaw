@@ -250,3 +250,54 @@ it.each(["streamed", "terminal-only"])(
     ).toEqual([firstText, finalText]);
   },
 );
+
+it.each(["Hello.", "Changed.", "Hello. Changed."])(
+  "recovers an earlier collapsed item's terminal sources only for its own completed prose: %s",
+  async (terminalProse) => {
+    const { output, events, run } = captureResponses();
+    const earlier = {
+      ...messageDone("msg_1", terminalProse).item,
+      content: [
+        {
+          type: "output_text",
+          text: terminalProse,
+          annotations: [
+            { type: "url_citation", url: "https://example.test/First", title: "First" },
+          ],
+        },
+      ],
+    };
+    const next = messageDone("msg_2", "Hello. More.");
+    const terminal = {
+      ...completed,
+      response: { ...completed.response, output: [earlier, next.item] },
+    };
+    await run([
+      messageAdded("msg_1"),
+      messageDone("msg_1", "Hello."),
+      messageAdded("msg_2"),
+      next,
+      terminal,
+      terminal,
+    ]);
+    const suffix = "\n\n[First](https://example.test/First)";
+    const accepted = terminalProse === "Hello.";
+    expect(output.content).toEqual([textBlock("msg_2", "Hello. More." + (accepted ? suffix : ""))]);
+    expect(eventTrace(events)).toBe(
+      "text_start@0 text_end@0 text_end@0" + (accepted ? " text_delta@0 text_end@0" : ""),
+    );
+    expect(
+      events.filter((event) => event.type === "text_delta").map((event) => event.delta),
+    ).toEqual(accepted ? [suffix] : []);
+    expect(
+      events.filter((event) => event.type === "text_end").map((event) => event.content),
+    ).toEqual(["Hello.", "Hello. More.", ...(accepted ? ["Hello. More." + suffix] : [])]);
+    expect(
+      events.filter((event) => event.type === "text_end").map((event) => event.partial.content[0]),
+    ).toEqual([
+      textBlock("msg_1", "Hello."),
+      textBlock("msg_2", "Hello. More."),
+      ...(accepted ? [textBlock("msg_2", "Hello. More." + suffix)] : []),
+    ]);
+  },
+);

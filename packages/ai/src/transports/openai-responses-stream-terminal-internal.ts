@@ -179,8 +179,9 @@ export function createResponsesTerminalController(params: {
   };
   const appendText = (
     item: ResponseOutputMessage,
-    initialIndex?: number,
-    initialRender = renderResponsesMessageText(item.content ?? []),
+    initialIndex: number | undefined,
+    initialRender: ResponsesMessageText,
+    preserveSignature = false,
   ): number | undefined => {
     let rendered = initialRender;
     let contentIndex = initialIndex;
@@ -194,7 +195,9 @@ export function createResponsesTerminalController(params: {
     if (started && contentIndex !== undefined) {
       const previousText = started.text;
       started.text = text;
-      started.textSignature = encodeTextSignatureV1(item.id, phase);
+      if (!preserveSignature) {
+        started.textSignature = encodeTextSignatureV1(item.id, phase);
+      }
       params.setLastTextBlock({ block: started, index: contentIndex, phase, rendered });
       if (text.startsWith(previousText)) {
         const delta = text.slice(previousText.length);
@@ -301,17 +304,35 @@ export function createResponsesTerminalController(params: {
         if (tracked?.completed) {
           const block = blocks[tracked.contentIndex];
           const previous = completedText.get(tracked.contentIndex);
-          if (block?.type === "text" && previous) {
-            const rendered = renderResponsesMessageText(item.content ?? [], previous);
+          if (block?.type === "text" && previous && tracked.completedProse !== undefined) {
+            const incoming = renderResponsesMessageText(item.content ?? []);
+            if (!incoming.prose.startsWith(tracked.completedProse)) {
+              continue;
+            }
+            // Earlier cumulative items may add sources without replacing the newest
+            // item's prose or replay identity in their shared public block.
+            const rendered = extendResponsesMessageText(
+              {
+                prose: previous.prose.startsWith(incoming.prose) ? previous.prose : incoming.prose,
+                citations: incoming.citations,
+              },
+              previous,
+            );
             if (rendered.text !== block.text) {
-              appendText(item, tracked.contentIndex, rendered);
+              appendText(
+                item,
+                tracked.contentIndex,
+                rendered,
+                tracked.completedProse !== previous.prose,
+              );
             }
           }
           continue;
         }
-        const appendedIndex = appendText(item, tracked?.contentIndex);
+        const rendered = renderResponsesMessageText(item.content ?? []);
+        const appendedIndex = appendText(item, tracked?.contentIndex, rendered);
         if (appendedIndex !== undefined) {
-          params.outputs.set(item, appendedIndex, terminalIndex, true);
+          params.outputs.set(item, appendedIndex, terminalIndex, true, rendered.prose);
         }
       } else {
         params.setLastTextBlock(null);
