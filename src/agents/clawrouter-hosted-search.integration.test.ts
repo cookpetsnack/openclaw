@@ -630,10 +630,13 @@ describe("ClawRouter admitted hosted search HTTP composition", () => {
       });
       expect(result.stopReason).toBe("stop");
       expect(result.content).toMatchObject([
-        { type: "text", text: "Synthetic source. [Fixture source](https://example.test/source)" },
+        {
+          type: "text",
+          text: "Synthetic source.\n\n[Fixture source](https://example.test/source)",
+        },
       ]);
       expect(result.content.filter((part) => part.type === "toolCall")).toEqual([]);
-      const fullText = "Synthetic source. [Fixture source](https://example.test/source)";
+      const fullText = "Synthetic source.\n\n[Fixture source](https://example.test/source)";
       expect(
         events.filter((event) => event.type === "text_end").map((event) => event.content),
       ).toEqual(wire === "late-citation" ? ["Synthetic source.", fullText] : [fullText]);
@@ -659,7 +662,11 @@ describe("ClawRouter admitted hosted search HTTP composition", () => {
           { type: "text_start", index: 0, text: undefined },
           { type: "text_delta", index: 0, text: "Synthetic source." },
           { type: "text_end", index: 0, text: "Synthetic source." },
-          { type: "text_delta", index: 0, text: " [Fixture source](https://example.test/source)" },
+          {
+            type: "text_delta",
+            index: 0,
+            text: "\n\n[Fixture source](https://example.test/source)",
+          },
           { type: "text_end", index: 0, text: fullText },
         ]);
       }
@@ -683,18 +690,22 @@ describe("ClawRouter admitted hosted search HTTP composition", () => {
       mode = wire;
       const { result, events } = await call();
       const text = result.content.find((part) => part.type === "text")?.text ?? "";
-      const parsed = new MarkdownIt().parseInline(text, {})[0]?.children ?? [];
+      const paragraphs = new MarkdownIt()
+        .parse(text, {})
+        .filter((token) => token.type === "inline");
+      const parsed = paragraphs.flatMap((token) => token.children ?? []);
       expect(result.stopReason).toBe("stop");
       expect(
-        parsed
-          .filter((token) => token.type === "text")
-          .map((token) => token.content)
-          .join(""),
-      ).toBe(
-        wire === "earlier-citation"
-          ? "Synthetic source. Second Fixture source"
-          : "Synthetic source. Fixture source Second",
-      );
+        paragraphs.map((paragraph) =>
+          (paragraph.children ?? [])
+            .filter((token) => token.type === "text")
+            .map((token) => token.content)
+            .join(""),
+        ),
+      ).toEqual([
+        "Synthetic source.",
+        wire === "earlier-citation" ? "Second Fixture source" : "Fixture source Second",
+      ]);
       expect(
         parsed.filter((token) => token.type === "link_open").map((token) => token.attrGet("href")),
       ).toEqual(
@@ -706,7 +717,7 @@ describe("ClawRouter admitted hosted search HTTP composition", () => {
         events.filter((event) => event.type === "text_end").map((event) => event.content),
       ).toEqual(
         wire === "earlier-citation"
-          ? ["Synthetic source. [Second](https://example.test/second)", text]
+          ? ["Synthetic source.\n\n[Second](https://example.test/second)", text]
           : ["Synthetic source.", text],
       );
     },
@@ -720,7 +731,9 @@ describe("ClawRouter admitted hosted search HTTP composition", () => {
     mode = "citation-title";
     const { result } = await call();
     const text = result.content.find((part) => part.type === "text")?.text ?? "";
-    const tokens = new MarkdownIt({ html: true }).parseInline(text, {})[0]?.children ?? [];
+    const tokens = new MarkdownIt({ html: true })
+      .parse(text, {})
+      .flatMap((token) => token.children ?? []);
     expect(
       tokens.filter((token) => token.type === "link_open").map((token) => token.attrGet("href")),
     ).toEqual(["https://example.test/source"]);
@@ -732,7 +745,7 @@ describe("ClawRouter admitted hosted search HTTP composition", () => {
         .filter((token) => token.type === "text")
         .map((token) => token.content)
         .join(""),
-    ).toBe("Synthetic source. <https://other.test/> <img src=x> [label] `code` *bold*");
+    ).toBe("Synthetic source.<https://other.test/> <img src=x> [label] `code` *bold*");
   });
 
   it.each([

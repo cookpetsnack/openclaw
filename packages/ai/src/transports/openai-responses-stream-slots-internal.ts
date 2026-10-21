@@ -33,7 +33,7 @@ export type ResponsesStreamOutputSlot<TMessage, TToolCall> =
 
 type DeferredTextSlot = {
   pendingText: string | null;
-  collapseCandidate: { block: { text: string } } | null;
+  collapseCandidate: { rendered: { prose: string } } | null;
 };
 
 type ResponsesOutputIdentityItem = {
@@ -177,7 +177,7 @@ export function appendResponsesPendingTextDelta<TSlot extends DeferredTextSlot>(
 ): void {
   const offset = slot.pendingText?.length ?? 0;
   slot.pendingText = `${slot.pendingText ?? ""}${delta}`;
-  const priorText = slot.collapseCandidate?.block.text ?? "";
+  const priorText = slot.collapseCandidate?.rendered.prose ?? "";
   // Earlier deltas already matched; only compare the new overlap with the prior item.
   if (
     offset >= priorText.length ||

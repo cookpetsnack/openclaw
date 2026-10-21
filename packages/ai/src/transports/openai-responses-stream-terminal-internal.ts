@@ -6,6 +6,7 @@ import type {
 } from "openai/resources/responses/responses.js";
 import { calculateCost } from "../model-utils.js";
 import {
+  extendResponsesMessageText,
   renderResponsesMessageText,
   type ResponsesMessageText,
 } from "../providers/openai-responses-message-text.js";
@@ -51,6 +52,7 @@ export type TextBlockReference = {
   block: TextContent;
   index: number;
   phase: TextSignatureV1["phase"] | undefined;
+  rendered: ResponsesMessageText;
 };
 export type ResponsesThinkingBlock = ThinkingContent & {
   [OPENAI_RESPONSES_REASONING_REPLAY_BLOCK_META_KEY]?: OpenAIResponsesReasoningReplayMetadata;
@@ -181,7 +183,7 @@ export function createResponsesTerminalController(params: {
     rendered = renderResponsesMessageText(item.content ?? []),
   ): number | undefined => {
     let contentIndex = initialIndex;
-    const text = rendered.text;
+    let text = rendered.text;
     const block = contentIndex === undefined ? undefined : blocks[contentIndex];
     const started = block?.type === "text" ? block : undefined;
     if (!text && !started) {
@@ -192,7 +194,7 @@ export function createResponsesTerminalController(params: {
       const previousText = started.text;
       started.text = text;
       started.textSignature = encodeTextSignatureV1(item.id, phase);
-      params.setLastTextBlock({ block: started, index: contentIndex, phase });
+      params.setLastTextBlock({ block: started, index: contentIndex, phase, rendered });
       if (text.startsWith(previousText)) {
         const delta = text.slice(previousText.length);
         if (delta) {
@@ -202,12 +204,15 @@ export function createResponsesTerminalController(params: {
     } else {
       const previous = params.getLastTextBlock();
       const collapse = resolveResponsesMessageSnapshotCollapse({
-        prior: previous && { text: previous.block.text, phase: previous.phase },
-        nextText: text,
+        prior: previous && { text: previous.rendered.prose, phase: previous.phase },
+        nextText: rendered.prose,
         nextPhase: phase,
       });
       if (collapse.kind === "extend" && previous) {
-        previous.block.text = collapse.text;
+        rendered = extendResponsesMessageText(rendered, previous.rendered);
+        text = rendered.text;
+        previous.rendered = rendered;
+        previous.block.text = text;
         previous.block.textSignature = encodeTextSignatureV1(item.id, phase);
         contentIndex = previous.index;
       } else {
@@ -218,7 +223,7 @@ export function createResponsesTerminalController(params: {
         };
         blocks.push(newBlock);
         contentIndex = blocks.length - 1;
-        params.setLastTextBlock({ block: newBlock, index: contentIndex, phase });
+        params.setLastTextBlock({ block: newBlock, index: contentIndex, phase, rendered });
         stream.push({ type: "text_start", contentIndex, partial: output });
       }
     }

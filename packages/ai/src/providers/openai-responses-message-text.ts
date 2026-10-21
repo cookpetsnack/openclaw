@@ -11,7 +11,7 @@ export function renderResponsesMessageText(
   content: readonly unknown[],
   previous?: ResponsesMessageText,
 ): ResponsesMessageText {
-  const citations = new Map(previous?.citations);
+  const citations = new Map<string, string>();
   const prose = content
     .map((part) => {
       if (!isRecord(part)) {
@@ -53,13 +53,32 @@ export function renderResponsesMessageText(
       return typeof part.text === "string" ? part.text : "";
     })
     .join("");
+  return extendResponsesMessageText({ prose, citations }, previous);
+}
+
+/** Merge source state only after matching cumulative provider prose, never formatted links. */
+export function extendResponsesMessageText(
+  next: Pick<ResponsesMessageText, "prose" | "citations">,
+  previous?: ResponsesMessageText,
+): ResponsesMessageText {
   // Terminal snapshots may add annotations, not replace already-delivered prose.
-  if (previous && !prose.startsWith(previous.prose)) {
+  if (previous && !next.prose.startsWith(previous.prose)) {
     return previous;
   }
+  let citations = next.citations;
+  if (previous) {
+    const combined = new Map(previous.citations);
+    for (const [url, link] of next.citations) {
+      if (!combined.has(url)) {
+        combined.set(url, link);
+      }
+    }
+    citations = combined;
+  }
   return {
-    prose,
+    prose: next.prose,
     citations,
-    text: citations.size > 0 ? prose + " " + [...citations.values()].join(" ") : prose,
+    // A separate paragraph cannot invalidate a closing fence or join a list/table row.
+    text: citations.size > 0 ? next.prose + "\n\n" + [...citations.values()].join(" ") : next.prose,
   };
 }

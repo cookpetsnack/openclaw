@@ -5,7 +5,10 @@ import {
   readStringValue,
 } from "@openclaw/normalization-core/string-coerce";
 import type { ResponseOutputItem } from "openai/resources/responses/responses.js";
-import { renderResponsesMessageText } from "../providers/openai-responses-message-text.js";
+import {
+  extendResponsesMessageText,
+  renderResponsesMessageText,
+} from "../providers/openai-responses-message-text.js";
 import {
   AZURE_RESPONSES_TEXT_CONTENT_PART_TYPE,
   OPENAI_RESPONSES_OUTPUT_TEXT_CONTENT_PART_TYPE,
@@ -554,10 +557,10 @@ export async function processResponsesStream<TApi extends Api>(
             outputSlot.pendingText !== null
               ? resolveResponsesMessageSnapshotCollapse({
                   prior: outputSlot.collapseCandidate && {
-                    text: outputSlot.collapseCandidate.block.text,
+                    text: outputSlot.collapseCandidate.rendered.prose,
                     phase: outputSlot.collapseCandidate.phase,
                   },
-                  nextText: finalText,
+                  nextText: rendered.prose,
                   nextPhase: phase,
                 })
               : ({ kind: "keep" } as const);
@@ -567,7 +570,12 @@ export async function processResponsesStream<TApi extends Api>(
             // instead of appending another copy. The deferred block was never
             // started publicly, and the newest item's signature is kept so
             // replay carries the item that produced this content (#91959).
-            outputSlot.collapseCandidate.block.text = collapse.text;
+            const extended = extendResponsesMessageText(
+              rendered,
+              outputSlot.collapseCandidate.rendered,
+            );
+            outputSlot.collapseCandidate.rendered = extended;
+            outputSlot.collapseCandidate.block.text = extended.text;
             outputSlot.collapseCandidate.block.textSignature = encodeTextSignatureV1(
               item.id,
               phase,
@@ -575,11 +583,11 @@ export async function processResponsesStream<TApi extends Api>(
             stream.push({
               type: "text_end",
               contentIndex: outputSlot.collapseCandidate.index,
-              content: collapse.text,
+              content: extended.text,
               partial: output,
             });
             lastTextBlock = outputSlot.collapseCandidate;
-            terminal.recordCompletedText(outputSlot.collapseCandidate.index, rendered);
+            terminal.recordCompletedText(outputSlot.collapseCandidate.index, extended);
             outputs.set(
               item,
               outputSlot.collapseCandidate.index,
@@ -605,7 +613,7 @@ export async function processResponsesStream<TApi extends Api>(
             if (contentIndex === undefined) {
               throw new Error("Responses stream finalized text without a content index");
             }
-            lastTextBlock = { block: outputSlot.block, index: contentIndex, phase };
+            lastTextBlock = { block: outputSlot.block, index: contentIndex, phase, rendered };
             terminal.recordCompletedText(contentIndex, rendered);
             outputs.set(
               item,

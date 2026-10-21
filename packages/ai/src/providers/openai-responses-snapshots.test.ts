@@ -196,3 +196,57 @@ describe("Responses cumulative message snapshots", () => {
     },
   );
 });
+
+it.each(["streamed", "terminal-only"])(
+  "collapses annotated cumulative %s snapshots by provider prose and retains earlier citations",
+  async (mode) => {
+    const { output, events, run } = captureResponses();
+    const annotated = (id: string, text: string, title: string) => ({
+      type: "response.output_item.done",
+      item: {
+        type: "message",
+        id,
+        phase: "final_answer",
+        content: [
+          {
+            type: "output_text",
+            text,
+            annotations: [{ type: "url_citation", url: `https://example.test/${title}`, title }],
+          },
+        ],
+      },
+    });
+    const first = annotated("msg_1", "Hello.", "First");
+    const next = annotated("msg_2", "Hello. More.", "Second");
+    const terminal = {
+      ...completed,
+      response: { ...completed.response, output: [first.item, next.item] },
+    };
+    await run([
+      ...(mode === "streamed"
+        ? [
+            messageAdded("msg_1"),
+            textDelta("Hello."),
+            first,
+            messageAdded("msg_2"),
+            textDelta("Hello. More."),
+            next,
+          ]
+        : []),
+      terminal,
+      terminal,
+    ]);
+    const firstText = "Hello.\n\n[First](https://example.test/First)";
+    const finalText =
+      "Hello. More.\n\n[First](https://example.test/First) [Second](https://example.test/Second)";
+    expect(output.content).toEqual([textBlock("msg_2", finalText)]);
+    expect(eventTrace(events)).toBe(
+      mode === "streamed"
+        ? "text_start@0 text_delta@0 text_end@0 text_end@0"
+        : "text_start@0 text_end@0 text_end@0",
+    );
+    expect(
+      events.filter((event) => event.type === "text_end").map((event) => event.content),
+    ).toEqual([firstText, finalText]);
+  },
+);
