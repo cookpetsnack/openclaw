@@ -381,9 +381,7 @@ it("applies sandbox tool denies to sandboxed loopback turns", async () => {
 
 describe("resolveGatewayScopedTools swarm collectors", () => {
   const runId = "cli-collector-run";
-  const schemalessRunId = "cli-schemaless-collector-run";
   const collectorSessionKey = "agent:main:subagent:cli-collector";
-  const schemalessCollectorSessionKey = "agent:main:subagent:cli-schemaless-collector";
   const schema = {
     type: "object",
     properties: { answer: { type: "string" } },
@@ -442,37 +440,35 @@ describe("resolveGatewayScopedTools swarm collectors", () => {
     expect(names).not.toContain("sessions_search");
   });
 
-  it("leaves non-collector sessions without the collector transport", async () => {
-    const names = await resolveNames({
-      sessionKey: "agent:main:subagent:cli-worker",
-      runId: "cli-worker-run",
-    });
-
+  it.each([
+    [
+      "non-collector session",
+      { sessionKey: "agent:main:subagent:cli-worker", runId: "cli-worker-run" },
+      true,
+    ],
+    ["different run grant", { runId: "some-other-cli-run" }, true],
+    ["captured result", {}, false],
+  ] as const)("withholds collector transport for %s", async (_name, overrides, canYield) => {
+    if (!canYield) {
+      await updateCollector((entry) => ({
+        ...entry,
+        collectorCompletion: { status: "done", structured: { answer: "ok" } },
+      }));
+    }
+    const names = await resolveNames(overrides);
     expect(names).not.toContain("structured_output");
-    expect(names).toContain("sessions_yield");
-  });
-
-  it("stops serving the collector transport after the result is captured", async () => {
-    await updateCollector((entry) => ({
-      ...entry,
-      collectorCompletion: { status: "done", structured: { answer: "ok" } },
-    }));
-    const names = await resolveNames();
-
-    expect(names).not.toContain("structured_output");
-    expect(names).not.toContain("sessions_yield");
+    expect(names.includes("sessions_yield")).toBe(canYield);
   });
 
   it("passes collector identity into tool construction for a schema-less collector", async () => {
+    const schemaLessRunId = "cli-schemaless-collector-run";
+    const sessionKey = "agent:main:subagent:cli-schemaless-collector";
     await addSubagentRunForTests({
-      runId: schemalessRunId,
-      childSessionKey: schemalessCollectorSessionKey,
+      runId: schemaLessRunId,
+      childSessionKey: sessionKey,
       collect: true,
     });
-    const tools = await resolveCollectorTools({
-      sessionKey: schemalessCollectorSessionKey,
-      runId: schemalessRunId,
-    });
+    const tools = await resolveCollectorTools({ sessionKey, runId: schemaLessRunId });
     const names = tools.map((tool) => tool.name);
     for (const forbidden of ["ask_user", "sessions_send", "sessions_yield", "structured_output"]) {
       expect(names).not.toContain(forbidden);
@@ -487,13 +483,6 @@ describe("resolveGatewayScopedTools swarm collectors", () => {
       "requires collect=true",
     );
   });
-  it("withholds the contract from a run-bound grant for a different run", async () => {
-    const names = await resolveNames({ runId: "some-other-cli-run" });
-
-    expect(names).not.toContain("structured_output");
-    expect(names).toContain("sessions_yield");
-  });
-
   it("admits the collector through the launch id a queued relaunch retains", async () => {
     // A relaunch retains the launch id as swarmRunId; both ids must admit the collector.
     const nextRunId = "cli-collector-relaunched";

@@ -269,21 +269,17 @@ describe("gateway hooks helpers", () => {
         agentId,
         error: `unknown agentId "${agentId}"`,
       });
-    expect(resolveEffectiveHookTargetAgentId(resolved, "missing-agent", "mapping")).toEqual({
-      ok: true,
-      selectedAgentId: "main",
-      effectiveAgentId: "main",
-    });
-    expect(resolveEffectiveHookTargetAgentId(resolved, "!!!", "mapping")).toEqual({
-      ok: true,
-      selectedAgentId: "main",
-      effectiveAgentId: "main",
-    });
-    expect(resolveEffectiveHookTargetAgentId(resolved, "hooks", "request")).toEqual({
-      ok: true,
-      selectedAgentId: "hooks",
-      effectiveAgentId: "hooks",
-    });
+    for (const [input, source, target] of [
+      ["missing-agent", "mapping", "main"],
+      ["!!!", "mapping", "main"],
+      ["hooks", "request", "hooks"],
+    ] as const) {
+      expect(resolveEffectiveHookTargetAgentId(resolved, input, source)).toEqual({
+        ok: true,
+        selectedAgentId: target,
+        effectiveAgentId: target,
+      });
+    }
     unknownAgent("missing-agent", "missing-agent");
     unknownAgent("Missing Agent", "missing-agent");
     unknownAgent("!!!", "!!!");
@@ -348,14 +344,12 @@ describe("gateway hooks helpers", () => {
         },
       });
 
-      expect(resolveEffectiveHookTargetAgentId(resolved, undefined, "request")).toEqual({
-        ok: true,
-        effectiveAgentId: "ops",
-      });
-      expect(resolveEffectiveHookTargetAgentId(resolved, undefined, "mapping")).toEqual({
-        ok: true,
-        effectiveAgentId: "ops",
-      });
+      for (const source of ["request", "mapping"] as const) {
+        expect(resolveEffectiveHookTargetAgentId(resolved, undefined, source)).toEqual({
+          ok: true,
+          effectiveAgentId: "ops",
+        });
+      }
       expect(resolveEffectiveHookTargetAgentId(resolved, "research", "request")).toEqual({
         ok: false,
         code: "owner-conflict",
@@ -395,28 +389,26 @@ describe("gateway hooks helpers", () => {
     ).toBe("agent:hooks:slack:channel:c123");
   });
 
-  test.each<{ name: string; hooks: OpenClawConfig["hooks"]; error: string }>([
-    { name: "root path", hooks: { path: "/" }, error: "hooks.path may not be '/'" },
-    {
-      name: "default session outside prefixes",
-      hooks: { defaultSessionKey: "agent:main:main", allowedSessionKeyPrefixes: ["hook:"] },
-      error: "hooks.defaultSessionKey must match hooks.allowedSessionKeyPrefixes",
-    },
-    {
-      name: "generated session outside prefixes",
-      hooks: { allowedSessionKeyPrefixes: ["agent:"] },
-      error:
-        "hooks.allowedSessionKeyPrefixes must include 'hook:' when hooks.defaultSessionKey is unset",
-    },
-    {
-      name: "templated agent key without prefixes",
-      hooks: { allowRequestSessionKey: true, mappings: [gmailMapping()] },
-      error:
-        "hooks.allowedSessionKeyPrefixes is required when a hook mapping sessionKey uses templates, even if hooks.allowRequestSessionKey=true",
-    },
-    {
-      name: "templated wake key without prefixes",
-      hooks: {
+  test.each<[string, OpenClawConfig["hooks"], string]>([
+    ["root path", { path: "/" }, "hooks.path may not be '/'"],
+    [
+      "default session outside prefixes",
+      { defaultSessionKey: "agent:main:main", allowedSessionKeyPrefixes: ["hook:"] },
+      "hooks.defaultSessionKey must match hooks.allowedSessionKeyPrefixes",
+    ],
+    [
+      "generated session outside prefixes",
+      { allowedSessionKeyPrefixes: ["agent:"] },
+      "hooks.allowedSessionKeyPrefixes must include 'hook:' when hooks.defaultSessionKey is unset",
+    ],
+    [
+      "templated agent key without prefixes",
+      { allowRequestSessionKey: true, mappings: [gmailMapping()] },
+      "hooks.allowedSessionKeyPrefixes is required when a hook mapping sessionKey uses templates, even if hooks.allowRequestSessionKey=true",
+    ],
+    [
+      "templated wake key without prefixes",
+      {
         mappings: [
           {
             match: { path: "wake" },
@@ -426,9 +418,9 @@ describe("gateway hooks helpers", () => {
           },
         ],
       },
-      error: "hooks.allowedSessionKeyPrefixes is required",
-    },
-  ])("resolveHooksConfig rejects $name", ({ hooks, error }) => {
+      "hooks.allowedSessionKeyPrefixes is required",
+    ],
+  ])("resolveHooksConfig rejects %s", (_, hooks, error) => {
     expect(() => resolveHooksConfig(hookConfig(hooks))).toThrow(error);
   });
 
