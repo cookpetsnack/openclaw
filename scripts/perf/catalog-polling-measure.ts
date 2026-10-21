@@ -41,6 +41,7 @@ const { values } = parseArgs({
     "activity-patch-sessions": { type: "string" },
     "activity-delete-sessions": { type: "string" },
     "activity-row-mix": { type: "boolean", default: false },
+    "activity-service-tiers": { type: "boolean", default: false },
     "gateway-pid": { type: "string" },
     "activity-catalog-refresh": { type: "boolean", default: false },
     "activity-cron": { type: "boolean", default: false },
@@ -81,6 +82,25 @@ if (values["load-runs"]) {
 
 async function measureLoads(runs: number) {
   const activityModels = values["activity-models"].split(",").filter(Boolean);
+  const serviceTiers = values["activity-service-tiers"];
+  const tierRun = randomUUID();
+  const tierSessions = ["priority", "ultrafast"].map(
+    (tier) => `agent:main:perf-tier-${tierRun}-${tier}`,
+  );
+  if (
+    serviceTiers &&
+    (!values["expect-session"] ||
+      values["activity-session"] ||
+      values["activity-patch-sessions"] ||
+      values["activity-delete-sessions"] ||
+      values["activity-cron"] ||
+      values["activity-catalog-refresh"] ||
+      values["activity-row-mix"])
+  ) {
+    throw new Error(
+      "--activity-service-tiers requires --expect-session and excludes other activity modes",
+    );
+  }
   const patchSessions = values["activity-patch-sessions"]?.split(",").filter(Boolean) ?? [];
   const deleteSessions = values["activity-delete-sessions"]?.split(",").filter(Boolean) ?? [];
   if (
@@ -107,7 +127,7 @@ async function measureLoads(runs: number) {
   const activitySession =
     values["activity-session"] ??
     patchSessions[0] ??
-    (deleteSessions.length ? values["expect-session"] : undefined);
+    (deleteSessions.length || serviceTiers ? values["expect-session"] : undefined);
   if (patchSessions.length && (values["activity-session"] || values["activity-cron"])) {
     throw new Error(
       "--activity-patch-sessions uses existing sessions and excludes turn/cron activity",
@@ -193,12 +213,40 @@ async function measureLoads(runs: number) {
         caps: [],
         ...(token ? { auth: { token } } : {}),
       });
-      if (!patchSessions.length && !deleteSessions.length) {
+      if (!patchSessions.length && !deleteSessions.length && !serviceTiers) {
         await activityRpc("sessions.create", {
           key: activitySession,
           visibility: "shared",
           model: activityModels[0],
         });
+      }
+    }
+    const sendTierTurn = async (sessionKey: string) => {
+      const result = await activityRpc("chat.send", {
+        sessionKey,
+        message: "Reply with one short synthetic response.",
+        deliver: false,
+        idempotencyKey: randomUUID(),
+      });
+      if (typeof result?.runId !== "string") {
+        throw new Error("Synthetic tier turn has no run ID");
+      }
+      const terminal = await activityRpc("agent.wait", { runId: result.runId, timeoutMs: 30_000 });
+      if (terminal?.status !== "ok") {
+        throw new Error(`Synthetic tier turn did not finish: ${JSON.stringify(terminal)}`);
+      }
+      return result.runId;
+    };
+    if (serviceTiers) {
+      for (const [index, key] of tierSessions.entries()) {
+        await activityRpc("sessions.create", { key, model: "openai/gpt-5", visibility: "shared" });
+        await activityRpc("sessions.patch", {
+          key,
+          fastMode: index === 0 ? true : "ultrafast",
+          thinkingLevel: "off",
+          label: `Synthetic service tier ${index === 0 ? "priority" : "ultrafast"}`,
+        });
+        await sendTierTurn(key);
       }
     }
     if (activityClient && values["activity-cron"]) {
@@ -520,6 +568,17 @@ async function measureLoads(runs: number) {
           await page.waitForTimeout(Math.max(0, startedAt + step * intervalMs - Date.now()));
           const atMs = await page.evaluate(() => performance.now());
           const started = Date.now();
+          if (serviceTiers) {
+            const key = tierSessions[step % tierSessions.length]!;
+            const runId = await sendTierTurn(key);
+            activity.push({
+              method: "chat.send",
+              atMs,
+              elapsedMs: Date.now() - started,
+              result: { sessionKey: key, runId, status: "ok" },
+            });
+            continue;
+          }
           if (deleteSessions.length) {
             const key = deleteSessions[step]!;
             const selectedKey = await page.evaluate(
@@ -968,6 +1027,7 @@ async function measureLoads(runs: number) {
       requestStacks: values["request-stacks"],
       reloadCensus: values["reload-census"],
       rowMix: values["activity-row-mix"],
+      serviceTiers,
       deleteSessions: deleteSessions.length || undefined,
       cpuMeasurement: gatewayPid
         ? "Linux Gateway main-thread CPU over the warm activity window; includes controller patches and background work. Per-browser-RPC normalization is workload cost, not handler self-time."

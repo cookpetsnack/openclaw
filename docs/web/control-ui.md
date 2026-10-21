@@ -159,6 +159,8 @@ Hidden retained chats defer command and model metadata refreshes until you retur
 
 Deleting a session refreshes the roster and invalidates that session's model choices without reloading metadata for unrelated chats. Session action menus build their contents when opened.
 
+Provider speed observations are tracked separately for each requested tier. Repeated identical responses retain the matching Fast or Ultrafast hint without refreshing every open chat's model choices. Recovery or expiry clears only the affected hint.
+
 Metadata refreshes wait for an in-progress model-runtime replacement to publish. An agent whose model runtime is unavailable does not interrupt commands or model choices for healthy agents; its metadata becomes available when its owner publishes.
 
 New Session keeps previously fetched model choices selectable while their catalog

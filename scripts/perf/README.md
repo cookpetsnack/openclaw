@@ -653,6 +653,26 @@ and waits for its keyed `sessions.changed` event. The retained event trace also
 shows any unscoped deletion notification and its following browser requests.
 Deleted keys are consumed; use fresh keys or a fresh synthetic fixture per run.
 
+For account service-tier observations, launch the reload fixture with
+`--service-tier-port <unused-loopback-port>` and run the browser probe with
+`--activity-service-tiers --load-runs 1 --expect-session <existing-key>`.
+The fixture serves a synthetic OpenAI Responses endpoint returning `fast`; its
+log records only the requested/returned tier and timestamp, never prompt content.
+The probe creates two uniquely named sessions using the real `openclaw` runtime
+and `openai/gpt-5` model: one requests priority, the other ultrafast. It completes
+one warmup turn per session before browser navigation, then alternates real
+`chat.send` turns and waits for successful `agent.wait` settlement. No inference
+credentials or external provider calls are needed. The visible conversation
+remains unchanged so catalog/descriptor requests expose cross-session effects.
+
+Use `--duration 42 --interval-ms 2000` for 21 measured initiating turns and
+`--reload-census --gateway-pid <fixture-pid>` for browser request counts and
+Gateway main-thread CPU. Verify the fixture log contains the expected alternating
+priority/ultrafast requests in addition to both warmups; a successful controller
+response alone does not prove model execution. Compare total CPU and CPU per
+fixed initiating turn, not CPU per remaining browser RPC. This mode excludes
+patch, delete, mixed-interaction, catalog-refresh and cron workloads.
+
 For active-session loads, add `--activity-session <synthetic-key>` and configure
 that isolated Gateway with two loopback mock-provider models:
 
