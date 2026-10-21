@@ -38,6 +38,7 @@ registerEnglishCatalog(registerSettingsEnglish);
 export type NotificationsSectionProps = Pick<
   ConfigProps,
   | "connected"
+  | "presentationRetired"
   | "nativeNotifications"
   | "onNativeNotificationsRequestPermission"
   | "onNativeNotificationsSendTest"
@@ -121,11 +122,19 @@ function NativeNotificationSection(props: {
   const status = () => nativeNotificationsStatus(props.native.permission);
   const [sending, setSending] = createOptimistic(false);
   const testPending = () => sending() || props.native.test?.state === "pending";
-  const presentTest = action(function* (pending: Promise<unknown> | void) {
-    setSending(true);
-    yield pending;
+  const presentTest = action(function* (pending: Promise<unknown> | void, retired: Promise<void>) {
+    if (retired === props.actions.presentationRetired()) {
+      setSending(true);
+    }
+    yield Promise.race([pending, retired]);
   });
-  const sendTest = () => void presentTest(props.actions.onNativeNotificationsSendTest?.());
+  const sendTest = async () => {
+    const retired = props.actions.presentationRetired();
+    const pending = props.actions.onNativeNotificationsSendTest?.();
+    // Let the synchronous owner's pending outcome publish before joining its transition.
+    await Promise.resolve();
+    return presentTest(pending, retired);
+  };
   return (
     <NotificationSection
       title={t("configView.notifications.nativeTitle")}
@@ -144,7 +153,7 @@ function NativeNotificationSection(props: {
       >
         <NotificationActions>
           {props.native.permission === "granted" ? (
-            <button class="btn primary" disabled={testPending()} onClick={sendTest}>
+            <button class="btn primary" disabled={testPending()} onClick={() => void sendTest()}>
               <Icon name={testPending() ? "loader" : "send"} />
               {testPending()
                 ? t("configView.notifications.sendingTest")
