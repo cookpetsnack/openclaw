@@ -264,15 +264,25 @@ describe("toStreamingMarkdownParts", () => {
           ),
       ),
     ];
+    const references = new Map<
+      string,
+      { split: ReturnType<typeof splitStableStreamingMarkdown>; html?: string }
+    >();
     for (const [caseIndex, markdown] of cases.entries()) {
       for (const chunkSize of [1, 7, 64]) {
         for (let end = chunkSize; end <= markdown.length + chunkSize; end += chunkSize) {
           const prefix = markdown.slice(0, Math.min(end, markdown.length));
           const key = `${caseIndex}-${chunkSize}`;
-          expect(splitStableStreamingMarkdown(prefix, `split-parity-${key}`)).toEqual(
-            splitStableStreamingMarkdown(prefix),
+          const split = splitStableStreamingMarkdown(prefix, `split-parity-${key}`);
+          let reference = references.get(prefix);
+          if (!reference) {
+            reference = { split: splitStableStreamingMarkdown(prefix) };
+            references.set(prefix, reference);
+          }
+          expect(split).toEqual(reference.split);
+          expect(streamHtml(prefix, {}, `html-parity-${key}`)).toBe(
+            (reference.html ??= streamHtml(prefix)),
           );
-          expect(streamHtml(prefix, {}, `html-parity-${key}`)).toBe(streamHtml(prefix));
           if (end >= markdown.length) {
             break;
           }
