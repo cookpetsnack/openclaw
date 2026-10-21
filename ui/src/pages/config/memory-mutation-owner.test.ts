@@ -431,6 +431,60 @@ describe("Memory plugin mutation ownership", () => {
     },
   );
 
+  it.each(["admin scope", "read-only catalog"])(
+    "keeps a retired %s failure out of its replacement add-on action",
+    async (change) => {
+      const oldReply = createDeferred<unknown>();
+      let mutationAllowed = true;
+      let mutationCalls = 0;
+      const setEnabled = vi.fn((pluginId: string, enabled: boolean) =>
+        mutationCalls++ === 0 ? oldReply.promise : Promise.resolve(committed(pluginId, enabled)),
+      );
+      const { element, runExternalMutation, setScopes, publishPluginGeneration } = createMemoryPage(
+        {
+          configObject: {},
+          listCatalog: () =>
+            Promise.resolve({
+              plugins: [createMemoryTestAddon("active-memory", true)],
+              mutationAllowed,
+            }),
+          setEnabled,
+        },
+      );
+      mountMemoryPage(element);
+      try {
+        await waitForSolid(() => expect(addonSwitch(element, "Active memory")).not.toBeNull());
+        toggleAddon(element, "Active memory", false);
+        await waitForSolid(() => expect(setEnabled).toHaveBeenCalledOnce());
+        if (change === "admin scope") {
+          setScopes(["operator.read"]);
+        } else {
+          mutationAllowed = false;
+          publishPluginGeneration(1);
+        }
+        await waitForSolid(() => expect(addonSwitch(element, "Active memory")).toBeNull());
+        if (change === "admin scope") {
+          setScopes(["operator.admin"]);
+        } else {
+          mutationAllowed = true;
+          publishPluginGeneration(2);
+        }
+        await waitForSolid(() => expect(addonSwitch(element, "Active memory")).not.toBeNull());
+        toggleAddon(element, "Active memory", false);
+        await waitForSolid(() => expect(runExternalMutation).toHaveBeenCalledTimes(2));
+        oldReply.reject(new Error("retired add-on failure"));
+        await waitForSolid(() => expect(setEnabled).toHaveBeenCalledTimes(2));
+        await Promise.allSettled(runExternalMutation.mock.results.map(({ value }) => value));
+        await flush();
+        expect(element.textContent).not.toContain("retired add-on failure");
+      } finally {
+        oldReply.resolve(committed("active-memory", false));
+        await Promise.allSettled(runExternalMutation.mock.results.map(({ value }) => value));
+        element.remove();
+      }
+    },
+  );
+
   it.each(["queued", "in flight"])(
     "preserves a %s add-on mutation and its busy state across plugin publications",
     async (phase) => {

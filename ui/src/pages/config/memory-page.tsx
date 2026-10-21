@@ -388,7 +388,9 @@ export function MemorySettingsPage(props: MemorySettingsPageProps) {
         const warnings = "warnings" in result ? (result.warnings ?? []) : [];
         const notice = warnings.join(" ");
         if (addonNoticeOperations.get(pluginId) === noticeOperation) {
-          applyPluginRefreshOutcome(connection, mutation.refreshError, pluginId);
+          if (retired === mutationPresentationLifetime.promise) {
+            applyPluginRefreshOutcome(connection, mutation.refreshError, pluginId);
+          }
           const currentBootId = application.gateway.snapshot.hello?.server?.bootId;
           const keepNotice =
             notice &&
@@ -406,7 +408,7 @@ export function MemorySettingsPage(props: MemorySettingsPageProps) {
           await loadCatalog(currentConnection.client, currentConnection);
         }
       } catch (error) {
-        if (pageConnection === connection) {
+        if (pageConnection === connection && retired === mutationPresentationLifetime.promise) {
           setAddonOutcomes((draft) => {
             draft.errors[pluginId] = formatUiError(error);
           });
@@ -470,13 +472,15 @@ export function MemorySettingsPage(props: MemorySettingsPageProps) {
             canDispatch: () => canDispatchPluginMutation(connection),
           },
         );
-        applyPluginRefreshOutcome(connection, mutation.refreshError);
+        if (retired === mutationPresentationLifetime.promise) {
+          applyPluginRefreshOutcome(connection, mutation.refreshError);
+        }
         const currentConnection = pageConnection;
         if (currentConnection?.connected && currentConnection.client) {
           await loadCatalog(currentConnection.client, currentConnection);
         }
       } catch (error) {
-        if (pageConnection === connection) {
+        if (pageConnection === connection && retired === mutationPresentationLifetime.promise) {
           setEngineOutcome({
             kind: "error",
             message: formatUiError(error),
