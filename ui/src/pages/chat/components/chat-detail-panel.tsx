@@ -19,6 +19,10 @@ import {
   createFilePresentationState,
   renderFilePanelPresentation,
 } from "./chat-detail-file-presentation.ts";
+import {
+  detailPanelOperationLifetime,
+  registerDetailPanelRetirement,
+} from "./chat-detail-panel-operation-lifetime.ts";
 import { createFileCopy } from "./chat-file-copy.ts";
 import { captureFileEditorDraft, readFileDraft, setFileDraft } from "./chat-file-drafts.ts";
 import { createFileSessionAttachment } from "./chat-file-session-attachment.ts";
@@ -168,14 +172,9 @@ function DetailPanel(props: ChatDetailPanelProps, host: ChatDetailPanel) {
   function updateSelection(
     contentChanged: boolean,
     navigationChanged: boolean,
-    previousRuntime: AttachmentSidebarRuntime | undefined,
     content: ChatDetailPanelContent | null,
     navigation: FileSidebarNavigation | null,
-    runtime: AttachmentSidebarRuntime,
   ) {
-    if (previousRuntime && previousRuntime.connectionEpoch !== runtime.connectionEpoch) {
-      attachmentDownload.cancel();
-    }
     if (!contentChanged) {
       if (
         navigationChanged &&
@@ -193,7 +192,6 @@ function DetailPanel(props: ChatDetailPanelProps, host: ChatDetailPanel) {
       }
       return;
     }
-    attachmentDownload.cancel();
     visibleContent = content;
     error = null;
     rawView = null;
@@ -609,6 +607,12 @@ function DetailPanel(props: ChatDetailPanelProps, host: ChatDetailPanel) {
   let previousContent: ChatDetailPanelContent | null | undefined;
   let previousNavigation: FileSidebarNavigation | null | undefined;
   let previousRuntime: AttachmentSidebarRuntime | undefined;
+  const unregisterRetirement = registerDetailPanelRetirement(
+    host,
+    () => previousContent,
+    () => previousRuntime,
+    () => attachmentDownload.cancel(),
+  );
   let handledFileViewRequest: FileReaderViewRequest | undefined;
   let fileViewRequestVersion = 0;
   let navigate = false;
@@ -631,14 +635,7 @@ function DetailPanel(props: ChatDetailPanelProps, host: ChatDetailPanel) {
     }
     if (contentChanged || navigationChanged || runtime !== previousRuntime) {
       navigate ||= contentChanged || (navigationChanged && navigation?.line != null);
-      updateSelection(
-        contentChanged,
-        navigationChanged,
-        previousRuntime,
-        content,
-        navigation,
-        runtime,
-      );
+      updateSelection(contentChanged, navigationChanged, content, navigation);
       previousContent = content;
       previousNavigation = navigation;
       previousRuntime = runtime;
@@ -728,6 +725,7 @@ function DetailPanel(props: ChatDetailPanelProps, host: ChatDetailPanel) {
     },
   );
   onCleanup(() => {
+    unregisterRetirement();
     disposed = true;
     draftListener?.(null);
     if (fileDirty) {
@@ -740,4 +738,5 @@ function DetailPanel(props: ChatDetailPanelProps, host: ChatDetailPanel) {
 
 defineSolidBridge("openclaw-chat-detail-panel", DetailPanel, {
   properties: chatDetailPanelProperties,
+  ...detailPanelOperationLifetime,
 });

@@ -1,4 +1,4 @@
-import { createSignal, onCleanup } from "solid-js";
+import { action, createOptimistic, createSignal, onCleanup } from "solid-js";
 import { t } from "../../../i18n/index.ts";
 import { downloadBlobFile } from "../../../lib/download.ts";
 import { formatUiError } from "../../../lib/format-error.ts";
@@ -12,10 +12,25 @@ export function createAttachmentDownload(
   runtime: () => AttachmentSidebarRuntime,
   isConnected: () => boolean,
 ) {
-  let request: AbortController | null = null;
-  const [pending, setPending] = createSignal(false, { ownedWrite: true });
+  let request: { controller: AbortController; retire: () => void } | null = null;
+  const [pending, setPending] = createOptimistic(false);
   const [error, setError] = createSignal<string | null>(null, { ownedWrite: true });
-  onCleanup(() => request?.abort());
+  const retire = () => {
+    request?.controller.abort();
+    request?.retire();
+    request = null;
+  };
+  onCleanup(retire);
+  const presentDownload = action(function* (
+    currentRequest: NonNullable<typeof request>,
+    completion: Promise<void>,
+    retired: Promise<void>,
+  ) {
+    if (request === currentRequest) {
+      setPending(true);
+    }
+    yield Promise.race([completion, retired]);
+  });
 
   return {
     get pending() {
@@ -25,9 +40,7 @@ export function createAttachmentDownload(
       return error();
     },
     cancel() {
-      request?.abort();
-      request = null;
-      setPending(false);
+      retire();
       setError(null);
     },
     onDownload: async () => {
@@ -35,11 +48,12 @@ export function createAttachmentDownload(
       if (attachment?.kind !== "attachment" || !attachment.download || request) {
         return;
       }
-      const currentRequest = new AbortController();
+      const read = attachment.download;
+      const retired = Promise.withResolvers<void>();
+      const currentRequest = { controller: new AbortController(), retire: retired.resolve };
       const { connectionEpoch, sessionKey, agentId } = runtime();
       request = currentRequest;
       setError(null);
-      setPending(true);
       const current = () => {
         const scope = runtime();
         return (
@@ -49,28 +63,32 @@ export function createAttachmentDownload(
           scope.connectionEpoch === connectionEpoch &&
           scope.sessionKey === sessionKey &&
           scope.agentId === agentId &&
-          !currentRequest.signal.aborted
+          !currentRequest.controller.signal.aborted
         );
       };
-      try {
-        const blob = await attachment.download(currentRequest.signal);
-        if (!current()) {
-          return;
+      const download = async () => {
+        try {
+          const blob = await read(currentRequest.controller.signal);
+          if (!current()) {
+            return;
+          }
+          if (!blob) {
+            throw new Error(t("chat.attachments.unavailable"));
+          }
+          downloadBlobFile(attachment.title, blob);
+        } catch (cause) {
+          if (current()) {
+            setError(formatUiError(cause));
+          }
+        } finally {
+          if (request === currentRequest) {
+            request = null;
+          }
         }
-        if (!blob) {
-          throw new Error(t("chat.attachments.unavailable"));
-        }
-        downloadBlobFile(attachment.title, blob);
-      } catch (cause) {
-        if (current()) {
-          setError(formatUiError(cause));
-        }
-      } finally {
-        if (request === currentRequest) {
-          request = null;
-          setPending(false);
-        }
-      }
+      };
+      const completion = download();
+      await Promise.resolve();
+      return presentDownload(currentRequest, completion, retired.promise);
     },
   };
 }
