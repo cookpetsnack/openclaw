@@ -31,19 +31,23 @@ export function createPullRequestCopy(options: {
     };
   });
   const present = action(function* (completion: Promise<void>, attempt: CopyAttempt) {
-    if (current(attempt)) setCopying(attempt);
+    if (current(attempt)) {
+      setCopying(attempt);
+    }
     yield Promise.race([completion, attempt.retired.promise]);
   });
   return {
     copying: () => {
       const attempt = copying();
-      return Boolean(attempt && current(attempt));
+      return attempt && current(attempt);
     },
     failed: () => failedUrl() !== undefined && failedUrl() === options.url(),
     retire,
     async copy() {
       const url = options.url();
-      if (!url || !mounted || !options.presented() || (active && current(active))) return;
+      if (!url || !mounted || !options.presented() || (active && current(active))) {
+        return;
+      }
       retire();
       const attempt = { url, retired: Promise.withResolvers<void>() };
       active = attempt;
@@ -51,15 +55,24 @@ export function createPullRequestCopy(options: {
       // Start before the action and its microtask so browser activation remains intact.
       const completion = copyToClipboard(url, () => current(attempt))
         .then((copied) => {
-          if (!current(attempt)) return;
-          if (copied) options.onCopied();
-          else setFailedUrl(url);
+          if (!current(attempt)) {
+            return;
+          }
+          if (copied) {
+            options.onCopied();
+          } else {
+            setFailedUrl(url);
+          }
         })
         .catch(() => {
-          if (current(attempt)) setFailedUrl(url);
+          if (current(attempt)) {
+            setFailedUrl(url);
+          }
         })
         .finally(() => {
-          if (active === attempt) active = undefined;
+          if (active === attempt) {
+            active = undefined;
+          }
         });
       await Promise.resolve();
       await present(completion, attempt);

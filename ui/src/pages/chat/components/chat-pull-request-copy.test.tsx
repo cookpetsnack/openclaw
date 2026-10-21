@@ -17,8 +17,8 @@ afterEach(() => {
 it.each(["desktop", "mobile"] as const)(
   "%s copy starts in the gesture and retires busy feedback on URL replacement and unmount",
   async (mode) => {
-    const first = createDeferredCore<void>();
-    const second = createDeferredCore<void>();
+    const first = createDeferredCore();
+    const second = createDeferredCore();
     const writeText = vi
       .fn<(text: string) => Promise<void>>()
       .mockReturnValueOnce(first.promise)
@@ -29,7 +29,7 @@ it.each(["desktop", "mobile"] as const)(
         get: (target, key) => (key === "clipboard" ? { writeText } : Reflect.get(target, key)),
       }),
     );
-    const notice = vi.spyOn(toast, "showToast").mockImplementation(() => {});
+    const notice = vi.spyOn(toast, "showToast").mockReturnValue(true);
     const [pr, setPr] = createSignal(pullRequest({ url: "https://example.test/first" }));
     const [visible, setVisible] = createSignal(true);
     const view = mountSolid(() => (
