@@ -614,6 +614,8 @@ it("leaves Appearance while a camera selection is unresolved", async () => {
 
   pending.resolve();
   await waitForSolid(() => expect(loadSettings().realtimeTalkVideoDeviceId).toBe("camera-1"));
+  expect(view.container.querySelector("h1")?.textContent).toBe("Notifications");
+  expect(view.container.querySelector("[data-settings-camera]")).toBeNull();
 });
 
 it("leaves the settings route before a camera switch settles and still records its outcome", async () => {
@@ -689,6 +691,8 @@ it("leaves the settings route before a camera switch settles and still records i
     expect(loadSettings().realtimeTalkVideoDeviceId).toBeUndefined();
     pending.resolve();
     await waitForSolid(() => expect(loadSettings().realtimeTalkVideoDeviceId).toBe("camera-1"));
+    expect(outlet.textContent).toContain("Usage destination");
+    expect(outlet.querySelector("openclaw-config-page")).toBeNull();
   } finally {
     pending.resolve();
     outlet.dispose();
