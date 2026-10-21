@@ -96,16 +96,8 @@ export function isSerialNodeTestProjection(
   groups: readonly { shard_name: string }[] | undefined,
   owner: Pick<CompactNodeTestShard, "planConcurrency" | "groups">,
 ): boolean {
-  if (owner.planConcurrency !== 2 || !groups) {
-    return false;
-  }
-  // Singleton projections may then share a serial row with another canonical owner.
-  return (
-    groups.length === 1 ||
-    groups.some(
-      (candidate) => !owner.groups.some((group) => group.shard_name === candidate.shard_name),
-    )
-  );
+  // Singleton normalization runs after packing, which may combine different owners.
+  return owner.planConcurrency === 2 && groups?.length === 1;
 }
 
 export function expectCanonicalGroupedConcurrency(shards: Shards, runnerBackend?: string) {
