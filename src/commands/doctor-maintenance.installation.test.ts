@@ -586,25 +586,22 @@ async function runInstallationCase(params: {
         vi.spyOn(performance, "now").mockImplementation(() => inspectionClock);
         // Charge both fresh byte validation and fallback snapshots: reusing decoded
         // rows does not remove the fresh read at each native authority boundary.
-        const readVersion = sqliteSnapshotSource.readSqliteSourceContentVersionSync;
+        const { readSqliteSourceContentVersionSync, prepareSqliteReadOnlyLocationSync } =
+          sqliteSnapshotSource;
+        const chargeInspection =
+          <T>(read: (pathname: string) => T) =>
+          (pathname: string) => {
+            const result = read(pathname);
+            if (inspectingRuntime) {
+              inspectionClock += 100;
+            }
+            return result;
+          };
         vi.spyOn(sqliteSnapshotSource, "readSqliteSourceContentVersionSync").mockImplementation(
-          (pathname) => {
-            const version = readVersion(pathname);
-            if (inspectingRuntime) {
-              inspectionClock += 100;
-            }
-            return version;
-          },
+          chargeInspection(readSqliteSourceContentVersionSync),
         );
-        const prepareSnapshot = sqliteSnapshotSource.prepareSqliteReadOnlyLocationSync;
         vi.spyOn(sqliteSnapshotSource, "prepareSqliteReadOnlyLocationSync").mockImplementation(
-          (pathname) => {
-            const prepared = prepareSnapshot(pathname);
-            if (inspectingRuntime) {
-              inspectionClock += 100;
-            }
-            return prepared;
-          },
+          chargeInspection(prepareSqliteReadOnlyLocationSync),
         );
       }
       try {
