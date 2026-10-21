@@ -195,7 +195,11 @@ describe("native overlay presentation", () => {
       });
       Object.assign(trigger().style, { position: "fixed", left: "200px", top: "50px" });
       await openMenu();
-      expect(expectWithinViewport(surface()).height).toBe(500);
+      const menu = surface();
+      // The opening scale changes DOM bounds until its presentation settles.
+      await expect.poll(() => getComputedStyle(menu).scale).toBe("1");
+      await Promise.all(menu.getAnimations().map((animation) => animation.finished));
+      expect(expectWithinViewport(menu).height).toBe(500);
       await userEvent.keyboard("{End}");
       expect(document.activeElement).toBe(item("Action 24"));
       const last = item("Action 24").getBoundingClientRect();
