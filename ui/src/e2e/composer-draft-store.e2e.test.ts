@@ -8,11 +8,7 @@ import {
   startControlUiE2eServer,
   waitForControlUiRoute,
 } from "../test-helpers/control-ui-e2e.ts";
-import {
-  captureUiProof,
-  chatSessionListResponse,
-  controlUiSessionUrl,
-} from "./chat-flow.test-support.ts";
+import { chatSessionListResponse, controlUiSessionUrl } from "./chat-flow.test-support.ts";
 import { verifyDurableComposerFences } from "./composer-draft-fences.test-support.ts";
 import { composerStore, composerStorePage } from "./config-composer-fixtures.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
@@ -113,7 +109,6 @@ suite.define(() => {
         await expect.poll(() => right.inputValue()).toBe("NEWER RIGHT DRAFT");
         await page.reload();
         await expect.poll(() => left.inputValue()).toBe("NEWER RIGHT DRAFT");
-        await captureUiProof(suite, page, "split-draft-eviction", "after.png");
       },
     );
   });
@@ -633,14 +628,8 @@ suite.define(() => {
             pane.state.selectedChatSessionIncognito
           );
         }, incognito);
-        try {
-          await expect.poll(() => composer.inputValue()).toBe("");
-          await expect
-            .poll(() => activePane.locator(".chat-attachment-file__name").count())
-            .toBe(0);
-        } finally {
-          await captureUiProof(suite, page, "incognito-draft-reload", "reloaded.png");
-        }
+        await expect.poll(() => composer.inputValue()).toBe("");
+        await expect.poll(() => activePane.locator(".chat-attachment-file__name").count()).toBe(0);
         const stored = await page.evaluate(
           ({ sessionKey, storageKey }) => {
             const raw = sessionStorage.getItem(storageKey);

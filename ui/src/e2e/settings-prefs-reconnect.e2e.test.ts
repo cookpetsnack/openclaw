@@ -8,6 +8,11 @@ import {
   type MockGatewayControls,
   type MockGatewayRequest,
 } from "../test-helpers/control-ui-e2e.ts";
+import {
+  configResponse,
+  patchPrefs as readPatchPrefs,
+  waitForRequestCount,
+} from "./appearance-prefs.test-support.ts";
 import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
 
 const suite = createControlUiE2eSuite({
@@ -18,33 +23,10 @@ const suite = createControlUiE2eSuite({
     `Playwright Chromium is not available at ${executablePath}. Run \`pnpm --dir ui exec playwright install --with-deps chromium\`, or set OPENCLAW_UI_E2E_ALLOW_MISSING_CHROMIUM=1 only when intentionally skipping this lane.`,
 });
 
-function configResponse(prefs: Record<string, unknown>, hash: string) {
-  const config = { ui: { prefs } };
-  return {
-    config,
-    hash,
-    configRevisionHash: hash,
-    appliedConfigHash: hash,
-    issues: [],
-    raw: JSON.stringify(config),
-    valid: true,
-  };
-}
-
-function requireRecord(value: unknown, label: string): Record<string, unknown> {
-  expect(value, label).toBeTruthy();
-  expect(typeof value, label).toBe("object");
-  expect(Array.isArray(value), label).toBe(false);
-  return value as Record<string, unknown>;
-}
-
 function patchPrefs(request: MockGatewayRequest): Record<string, unknown> {
-  const params = requireRecord(request.params, "config.patch params");
-  expect(Object.hasOwn(params, "baseHash")).toBe(false);
-  expect(typeof params.raw).toBe("string");
-  const parsed = requireRecord(JSON.parse(String(params.raw)), "config.patch raw");
-  const ui = requireRecord(parsed.ui, "config.patch ui");
-  return requireRecord(ui.prefs, "config.patch ui.prefs");
+  const prefs = readPatchPrefs(request);
+  expect(request.params).not.toHaveProperty("baseHash");
+  return prefs;
 }
 
 function createContext(colorScheme?: "dark" | "light") {
@@ -124,16 +106,6 @@ async function expectLightTheme(page: Page) {
 
 async function expectMirror(page: Page, prefs: Record<string, unknown>) {
   await expect.poll(() => readSettingsMirror(page)).toMatchObject(prefs);
-}
-
-async function waitForRequestCount(
-  gateway: MockGatewayControls,
-  method: string,
-  count: number,
-): Promise<void> {
-  await expect
-    .poll(async () => (await gateway.getRequests(method)).length, { timeout: 10_000 })
-    .toBe(count);
 }
 
 async function proxyReconnect(

@@ -1,23 +1,15 @@
-import type { Locator, Page } from "playwright";
 import { expect, it } from "vitest";
 import { installMockGateway } from "../test-helpers/control-ui-e2e.ts";
 import { createUpdateRunFixture } from "../test-helpers/update-run.ts";
-import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
+import {
+  createControlUiE2eSuite,
+  e2eButton as button,
+  e2eText as text,
+} from "./control-ui-e2e-suite.test-support.ts";
+import { updateE2eConfig } from "./update-run.test-support.ts";
 
 const suite = createControlUiE2eSuite({ name: "Control UI external supervisor update E2E" });
-const config = { update: { auto: { enabled: false }, channel: "stable" } };
-const configResponse = {
-  config,
-  hash: "external-update-config",
-  raw: JSON.stringify(config),
-  runtimeConfig: config,
-  valid: true,
-  issues: [],
-};
-
-function button(root: Page | Locator, name: string) {
-  return root.getByRole("button", { name, exact: true });
-}
+const configResponse = updateE2eConfig("external-update-config");
 
 suite.define(() => {
   it("explains the refused update in the dialog and retained Settings report", async () => {
@@ -63,9 +55,7 @@ suite.define(() => {
         await button(dialog, "Update and restart").click();
         await gateway.waitForRequest("update.run");
         const report = dialog.locator(".update-run-view__report");
-        await report
-          .getByText(`ℹ️ OpenClaw update skipped: ${reason}.`, { exact: false })
-          .waitFor();
+        await text(report, `ℹ️ OpenClaw update skipped: ${reason}.`, false).waitFor();
         const reportText = await report.textContent();
         expect(reportText).toContain("Use your server or deployment's update workflow");
         expect(reportText).toContain("No package changes or Gateway restart were attempted");
@@ -74,9 +64,7 @@ suite.define(() => {
         await button(dialog, "Close").click();
         await dialog.waitFor({ state: "detached" });
         const savedReport = page.locator(".update-run-view__report");
-        await savedReport
-          .getByText("Use your server or deployment's update workflow", { exact: false })
-          .waitFor();
+        await text(savedReport, "Use your server or deployment's update workflow", false).waitFor();
         await savedReport.scrollIntoViewIfNeeded();
         expect(await gateway.getRequests("update.run")).toHaveLength(1);
         expect(await gateway.getRequests("update.report")).toHaveLength(0);
@@ -98,9 +86,7 @@ suite.define(() => {
           message: "Update status is temporarily unavailable",
         });
         const settings = page.locator("#config-section-update");
-        await settings
-          .getByText("Update status is temporarily unavailable", { exact: false })
-          .waitFor();
+        await text(settings, "Update status is temporarily unavailable", false).waitFor();
         const checkStatus = button(settings, "Check status");
         await checkStatus.waitFor();
         expect(await checkStatus.isDisabled()).toBe(false);
@@ -115,9 +101,9 @@ suite.define(() => {
         });
         await checkStatus.click();
         await gateway.waitForRequest("update.status", { after: statusChecksBeforeRecovery });
-        await settings
-          .getByText("Update status is temporarily unavailable", { exact: false })
-          .waitFor({ state: "detached" });
+        await text(settings, "Update status is temporarily unavailable", false).waitFor({
+          state: "detached",
+        });
         expect(await gateway.getRequests("update.run")).toHaveLength(1);
       },
     );
@@ -144,9 +130,7 @@ suite.define(() => {
       await page.goto(`${suite.server.baseUrl}settings/updates`);
       await gateway.waitForRequest("update.status");
       const settings = page.locator("#config-section-update");
-      await settings
-        .getByText("Use your server or deployment's update workflow", { exact: false })
-        .waitFor();
+      await text(settings, "Use your server or deployment's update workflow", false).waitFor();
       expect(await button(settings, "Retry update").count()).toBe(0);
       expect(await settings.textContent()).not.toMatch(/CLI fallback|openclaw triage/);
       expect(await gateway.getRequests("update.run")).toHaveLength(0);

@@ -1,7 +1,6 @@
 import { expect, it } from "vitest";
 import type { ChatQueueItem, ChatReplyTarget } from "../lib/chat/chat-types.ts";
 import { selectChatLayoutAction } from "../test-helpers/chat-layout-menu.ts";
-import { createControlUiE2eArtifactDir } from "../test-helpers/control-ui-e2e-artifacts.ts";
 import {
   waitForControlUiGatewayReady,
   waitForControlUiGatewayReconnecting,
@@ -9,7 +8,11 @@ import {
 import { installMockGateway, startControlUiE2eServer } from "../test-helpers/control-ui-e2e.ts";
 import { expectRequestCountStable, requireRecord } from "./chat-flow.test-support.ts";
 import { composerStore, composerStorePage } from "./config-composer-fixtures.test-support.ts";
-import { createControlUiE2eSuite } from "./control-ui-e2e-suite.test-support.ts";
+import {
+  createControlUiE2eSuite,
+  e2eButton,
+  e2eText,
+} from "./control-ui-e2e-suite.test-support.ts";
 import { waitForCommittedComposerDraft } from "./settle.test-support.ts";
 
 const suite = createControlUiE2eSuite({
@@ -192,18 +195,12 @@ suite.define(() => {
         );
         const notice = page.locator("#storage-error-recovery .chat-outbox-recovery");
         await notice.getByRole("alert").waitFor();
-        if (process.env.OPENCLAW_UI_E2E_ARTIFACT_DIR?.trim()) {
-          const artifacts = createControlUiE2eArtifactDir("recovery-error");
-          await page.screenshot({ path: `${artifacts}/expanded.png`, animations: "disabled" });
-          await page.setViewportSize({ width: 390, height: 700 });
-          await page.screenshot({ path: `${artifacts}/mobile.png`, animations: "disabled" });
-        }
         expect(await notice.getByRole("alert").textContent()).toContain(
           "We could not access your saved messages.",
         );
         expect(await notice.textContent()).not.toContain("older browser");
         expect(await notice.textContent()).not.toContain("Free browser storage");
-        expect(await notice.getByRole("button", { name: "Restore", exact: true }).count()).toBe(0);
+        expect(await e2eButton(notice, "Restore").count()).toBe(0);
       },
     );
   });
@@ -218,9 +215,9 @@ suite.define(() => {
         });
         await page.goto(`${suite.server.baseUrl}chat/main`);
         await waitForControlUiGatewayReady(page);
-        await page.getByText("Split draft owner ready.", { exact: true }).waitFor();
+        await e2eText(page, "Split draft owner ready.").waitFor();
         await page.locator(".agent-chat__composer-combobox textarea").fill("split seed");
-        await page.getByRole("button", { name: "Send message", exact: true }).click();
+        await e2eButton(page, "Send message").click();
         const seed = await gateway.waitForRequest("chat.send");
         await gateway.emitChatFinal({
           runId: String(requireRecord(seed.params).idempotencyKey),
@@ -250,7 +247,7 @@ suite.define(() => {
             });
             await expect.poll(() => left.locator(".chat-attachment-thumb").count()).toBe(1);
           }
-          await left.getByRole("button", { name: "Send message", exact: true }).click();
+          await e2eButton(left, "Send message").click();
           await expect.poll(() => composer.inputValue()).toBe("");
           await expect.poll(() => right.locator(".chat-queue__item").count()).toBe(index + 1);
         }
@@ -431,7 +428,7 @@ suite.define(() => {
         );
         const hostHandle = await fixture.evaluateHandle(({ host }) => host);
         const notice = page.locator("#recovery-fence-fixture");
-        const restore = notice.getByRole("button", { name: "Restore", exact: true });
+        const restore = e2eButton(notice, "Restore");
         if (change === "incognito") {
           expect(await notice.locator(".chat-outbox-recovery-row").count()).toBe(0);
           expect(await restore.count()).toBe(0);
@@ -470,7 +467,7 @@ suite.define(() => {
             },
             { host: hostHandle, change },
           );
-          await dialog.getByRole("button", { name: "Restore", exact: true }).click();
+          await e2eButton(dialog, "Restore").click();
           await dialog.waitFor({ state: "detached" });
           await expect
             .poll(
