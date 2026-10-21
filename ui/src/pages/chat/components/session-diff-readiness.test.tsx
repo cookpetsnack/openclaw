@@ -99,7 +99,11 @@ describe("SessionDiffPanel readiness", () => {
     expect(panel.querySelector("openclaw-panel-loading-skeleton")).toBeNull();
     expect(panel.querySelector(".session-diff")?.getAttribute("aria-busy")).toBe("false");
 
-    update({ loader: vi.fn(() => pending.promise) });
+    update({
+      mobile: false,
+      owner: { agentId: "main", sessionKey: "original-session" },
+      loader: vi.fn(() => pending.promise),
+    });
     await waitForSolid(() => {
       expect(
         panel.querySelector("openclaw-panel-loading-skeleton")?.getAttribute("data-panel-skeleton"),

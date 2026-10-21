@@ -169,7 +169,8 @@ export function SessionDiffPanel(props: SessionDiffProps) {
   );
   const awaitingDestination = () => {
     const destination = latest(presentationScope);
-    const current = value();
+    // Compare the destination and accepted result in the same transition frame.
+    const current = latest(value);
     return (
       destination.available &&
       (current?.owner !== destination.owner || current.scope !== destination.scope)
