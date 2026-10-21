@@ -116,10 +116,11 @@ it("cancels without creating an agent", () => {
 
 it("keeps creation disabled during avatar conversion and recovers from an unusable upload", async () => {
   const pending = createDeferred<{ ok: false; reason: "too-detailed" }>();
+  const retry = createDeferred<{ ok: true; dataUrl: string }>();
   picker.convert
     .mockReset()
     .mockReturnValueOnce(pending.promise)
-    .mockResolvedValue({ ok: true, dataUrl: selectedAvatar });
+    .mockReturnValueOnce(retry.promise);
   const onCreate = vi.fn();
   const view = mountSolid(AgentCreateDialog, {
     context: dialogContext(),
@@ -147,6 +148,10 @@ it("keeps creation disabled during avatar conversion and recovers from an unusab
   });
 
   picker.upload(file);
+  flush();
+  expect(view.container.querySelector('[role="alert"]')).toBeNull();
+  expect(create.disabled).toBe(true);
+  retry.resolve({ ok: true, dataUrl: selectedAvatar });
   await waitForSolid(() => {
     expect(view.container.querySelector('[role="alert"]')).toBeNull();
     expect(create.disabled).toBe(false);

@@ -183,7 +183,7 @@ export function AgentCreateDialog(props: {
               setAvatarError(null);
             }}
           />
-          <Show when={avatarError()}>
+          <Show when={!uploadBusy() && avatarError()}>
             {(message) => (
               <p class="agent-create-dialog__error" role="alert">
                 {message()}
