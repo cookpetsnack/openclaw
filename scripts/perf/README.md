@@ -620,6 +620,39 @@ then omit it for paired timing.
 Failed attempts retain the available browser probe under `failure`, including
 failures in the final Details assertions; they are diagnostics, not accepted samples.
 
+Add `--activity-row-mix` to the two-session patch workload to cycle selected-session
+label changes, other-session status changes, selected-session status changes,
+sidebar hover, sidebar scrolling, session opening through the sidebar, and opening
+the session menu with an owner-submenu hover. The two keys must be visible in the
+synthetic sidebar; the reload fixture's session 1 and pinned session 2 work. Use
+`--reload-census` to count every browser RPC. Each action records its following
+observation window, `sessions.changed` events, `sessions.describe` requests and
+session-scoped `models.list` requests; the report also normalizes the warm window
+to requests per tab-minute. An interval contains deferred work from preceding
+actions too, so use the retained event timestamps for causal attribution. Closed
+menu panel, owner-submenu and avatar inventories are captured at readiness and
+before the activity window. The menu step waits for its root panel and the owner
+search input, recording their separate automation-to-visible times. With
+`--screenshot`, the first open owner menu is also captured beside the final image;
+omit screenshots during paired timing. This mode does not need model inference.
+
+On Linux, pass `--gateway-pid <pid>` using `gatewayPid` from the reload fixture's
+ready record to capture that Gateway's main-thread CPU during the warm window.
+CPU per action and (with `--reload-census`) CPU per browser RPC include controller
+patches and background work; they are workload-normalized costs, not handler
+self-time. Keep both sides' fixture, interval, seed and duration identical, and
+keep caller-stack recording off for timing runs. The report retains each RPC's
+timestamps for latency analysis; report sample counts with any derived tails.
+
+Use `--activity-delete-sessions <key-a>,<key-b>,...` with `--load-runs 1` and
+`--expect-session <different-visible-key>` to isolate unrelated session removals.
+Supply one distinct existing synthetic key per interval: 12 keys with
+`--duration 24 --interval-ms 2000` performs 12 deletions. This mode excludes other activity
+modes, preserves the visible conversation, requires each deletion to succeed,
+and waits for its keyed `sessions.changed` event. The retained event trace also
+shows any unscoped deletion notification and its following browser requests.
+Deleted keys are consumed; use fresh keys or a fresh synthetic fixture per run.
+
 For active-session loads, add `--activity-session <synthetic-key>` and configure
 that isolated Gateway with two loopback mock-provider models:
 

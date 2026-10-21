@@ -263,8 +263,12 @@ try {
     ) {
       throw new Error("Fixture preferences require a durable synthetic profile");
     }
-    for (const key of pinKeys) {
-      await rpc("sessions.patch", { key, label: `Reload pin ${key.split("-").at(-1)}` });
+    for (const key of [selectedKey, ...pinKeys]) {
+      await rpc("sessions.patch", {
+        key,
+        label: `Reload pin ${key.split("-").at(-1)}`,
+        statusNote: null,
+      });
     }
     await rpc("board.widget.put", {
       sessionKey: selectedKey,
@@ -281,6 +285,7 @@ try {
   console.log(
     JSON.stringify({
       ready: true,
+      gatewayPid: gateway.pid,
       origin,
       selectedKey,
       paths: ["dashboard", "chat"].map((namespace) =>
