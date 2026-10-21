@@ -244,7 +244,6 @@ async function measureLoads(runs: number) {
           key,
           fastMode: index === 0 ? true : "ultrafast",
           thinkingLevel: "off",
-          label: `Synthetic service tier ${index === 0 ? "priority" : "ultrafast"}`,
         });
         await sendTierTurn(key);
       }
