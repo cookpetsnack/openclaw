@@ -1,5 +1,57 @@
 # Team-shaped synthetic state
 
+## Diagnostic heap profile sanitization
+
+`diagnostic-profile-measure.ts` measures the production diagnostics owners on an
+approved benchmark host. It does not start a Gateway or exercise RPC admission.
+Run the same script against separate baseline and candidate source roots:
+
+```sh
+node --import ./scripts/tsx.mjs scripts/perf/diagnostic-profile-measure.ts \
+  --source-root /path/to/checkout --mode sanitize --iterations 5 \
+  --start-at <future-epoch-ms> --output /path/to/result.json
+```
+
+The sanitizer workload has 65,535 distinct frames in a depth-16 binary tree and
+131,072 allocation samples representing exactly 4 GiB. This is sampled allocation
+volume, not a 4 GiB JSON document or resident heap. It reports output bytes and a
+SHA-256 digest so baseline and candidate redaction can be compared exactly. Timing
+and CPU measurements exclude source imports and synthetic tree preparation.
+
+The native heap capture requests 600,000 ms with both collected-object flags and
+allocates 4 GiB of synthetic array payload over 28 seconds, exercising the owner's
+30-second cap. The native CPU capture retains the production stall flight recorder
+while requesting its fixed five-second, 10 ms capture; this models the overlapping
+native profiler used by a running Gateway. Repeat with `--mode heap` and
+`--mode cpu`, each in a fresh process, so sanitizer fixture garbage cannot affect
+native capture memory and GC. `--mode all` is convenient for exploratory runs.
+`--mode record` writes a small native synthetic heap profile and
+its sanitized golden output for an equivalence fixture.
+
+Each result includes operation wall time, process CPU, peak RSS, total GC duration
+and count, major GC duration and count, the maximum measured asynchronous callback
+and its callback count, and the event-loop delay maximum and sample count. Native
+heap capture also records V8 node/sample counts, sampled bytes, and inspector stop
+time by observing the owner's inspector result. Response JSON serialization is
+included in the measured operation. Callback
+timing includes GC and host preemption; it is not a profiler-derived CPU duration.
+No latency percentiles are inferred from the five sanitizer iterations. Major GC
+remains context-only below 50 collections per side.
+
+Peak RSS is the operating system's process-lifetime high-water mark, including
+setup and earlier iterations. Compare the last value from each fresh process.
+It does not use a main-thread timer, which would miss the synchronous baseline's
+peak while sampling the yielding candidate. The event-loop histogram is primed
+before timed work so it also observes the first synchronous task.
+
+For acceptance, hold one exclusive quiet-slot lock around concurrent baseline and
+candidate processes and use identical `--start-at` values. Use interleaved physical
+cores within that slot, then swap placements for a second pair. Evaluate the mean
+of the paired percentage deltas; reject a mean at least 20% adverse or a metric at
+least 10% adverse in both pairs. Follow the host's production load, dirty-page, and
+event-loop guard before and during every pair. Keep fixture recording and all
+preparation outside the measurement CPU allocation.
+
 ## Async context allocation
 
 `async-store-measure.mjs` compares Node's native runner, the shared single-copy
@@ -1314,6 +1366,15 @@ The upstream elapsed times include the injected wait and fetch header resolution
 they are not additive handler self-time. Use Gateway diagnostics for handler time
 and the existing RPC byte counts for serialization volume.
 
+`--list-profile-reference <reference>` applies the person-reference filter to
+concurrent list polling. Use a missing hexadecimal prefix such as `ffffffff` to
+exercise resolution across the full visible retained roster; that workload
+accepts an empty page and measures reference resolution rather than row rendering.
+The ordinary list-polling workload still requires nonempty pages. Add
+`--capture-responses` to a memory soak to capture the seeded roster after the
+measured window; person-filtered polling also adds four person-reference
+requests to that capture.
+
 Each allocation profile includes collected objects and reports decimal
 `allocatedMbPerTurn`. Allocation soaks keep one continuous sampling window and
 report it as `wholeSoakAllocation` with `allocation-soak.heapprofile`. These long
@@ -1336,6 +1397,28 @@ non-soak allocation experiments still stop a profile per cohort; their GC
 results do not establish natural steady-state GC behavior. Sampling retains
 native sample metadata and adds stack-capture overhead; confirm marginal
 GC/latency results with a matching soak without allocation profiling.
+
+For allocation work that executes in a worker, add `--worker-allocations` to
+`memory-soak --allocations`. It uses the existing private inspector channel and
+the same collected-object sampling interval in every isolate. The
+`wholeSoakAllocation.workerManifestPath` artifact lists each worker's native
+thread ID, registry script identity, inspector title, acknowledged sampling boundaries, completion/error,
+and profile path. Live workers absent from the initialized Gateway registry are
+marked separately; Gateway-owned worker pools register synchronously. Join native IDs to the existing memory samples' `workerHeaps`
+and `workerMemoryMissing` script identities before attributing bytes to an owner.
+Read successful worker profiles with `readGatewayHeapProfile` and report main,
+owner-worker, all-worker, and combined bytes per completed foreground turn
+separately. During profiling, intentional worker termination first exports its
+active profiles, waiting at most five seconds for an unresponsive worker.
+Unexpected exits, failed exports, or unidentified workers are missing evidence,
+never zero allocation. Worker profiling also samples worker resource usage every 100 ms;
+enable it identically on both sides of a comparison.
+
+`--soak-rounds <n>` runs exactly that many measured cohorts instead of admitting
+cohorts until the duration deadline. The continuous diagnostics/allocation window
+still lasts at least `--duration-ms`, including any final idle gap. Use equal
+cohort counts and session-reset counts when comparing promotion and GC, and size
+the workload for at least 200 observations per side for p95 (1,000 for p99).
 
 Run at least twenty measured minutes per side and compare at least two concurrent
 pairs with swapped CPU halves. Compare B minus A within each pair for allocation,
@@ -1952,6 +2035,25 @@ the lookup callback only counts demand, so registry allocation and whole-Gateway
 cost still require the workload below. Run baseline/candidate pairs under the
 benchmark host's measurement policy; keep import/startup outside these samples.
 
+For provider request preparation alone, run the source owner directly:
+
+```sh
+node --expose-gc --import ./scripts/tsx.mjs scripts/perf/provider-request-prepare-measure.ts \
+  --messages 500 --iterations 300 --mode prepare --output /path/to/result
+```
+
+Use `--mode transport` to isolate standalone request-body serialization. The
+driver compares wire bytes with native JSON, including a custom `toJSON` and
+ordered getters, then counts JSON serialization/parsing, UTF-8 encoding, and
+hash calls and bytes for one request. `wholeRequestCalls` counts operations
+whose byte size equals the full request; field and prefix hashes remain in the
+totals. Counting runs separately from allocation/timing capture. The profile
+includes objects collected by both minor and major GC. These measurements cover
+the owner in the driver's isolate, excluding worker transport and the Gateway;
+use the Gateway `chat.send --allocations` workload for main-isolate turn cost.
+Compare baseline and candidate serially in interleaved ABAB order, with at least
+five samples per revision.
+
 Use the same owned Gateway driver with `--allocations` and a named `--scenario`:
 
 ```sh
@@ -2077,6 +2179,24 @@ and warm top-200 sorting over 5,000 rows, plus the selected keys for all three s
 Use `--count-work` in a separate process for exact comparator, pin, activity, and
 key-normalization call counts. That pass enables coverage before loading the owner
 and excludes performance measurements. Run the same script on both revisions.
+
+For profile-reference filtering over 5,000 prepared sessions, run:
+
+```sh
+node --expose-gc --import ./scripts/tsx.mjs scripts/perf/session-profile-reference-measure.ts \
+  --iterations 108 --output sample.json --golden responses.json
+```
+
+Each process reports one warm main-thread CPU and sampled-allocation observation
+per `filterSessionEntries` operation, including objects collected by minor and
+major GC. The 27 requests cover three viewer scopes, canonical and merged aliases,
+retained profiles, prefix and missing references, archives, and empty time windows.
+Every session has three participants; the 50 profile identities include ten aliases
+and ten retained identities without durable rows. Preparation uses an isolated
+empty catalog and asserts that no SQLite file is created. Compare `responses.json`
+byte-for-byte between revisions; it contains complete 25-row filter results and
+full-roster facets. Run at least five alternating baseline/candidate processes on
+the benchmark host. This is an owner probe, not Gateway or transport evidence.
 
 For long RPC allocation windows, use `--warmup-operations` to warm fewer requests
 than the measured `--operations` count. For example, `--scenario sessions.list
@@ -2239,6 +2359,34 @@ and catalog traffic is reported separately and is excluded from the healthy-row
 rate comparison. The default run starts no model provider.
 
 ## Prompt history fingerprints
+
+`worker-task-metrics-measure.ts` measures the real shared compute pool and source
+provider-prompt worker with one short user message, then 64 synthetic messages
+containing 256 KiB of text. Run on the approved benchmark host:
+
+```sh
+node --import ./scripts/tsx.mjs scripts/perf/worker-task-metrics-measure.ts \
+  --start-at <future-epoch-ms> --output /path/to/result.json
+```
+
+Each phase has four concurrent clients and four bursts of 5,000 timed tasks,
+providing 20,000 samples for p50/p95/p99; every percentile includes its sample count.
+Each burst first warms 500 tasks, and then retires its workers with `pool.rotate()`.
+Task latency and phase CPU/elapsed exclude warmup and rotation; rotation times are
+reported separately. The first warmup completes before the shared start deadline;
+subsequent bursts and the second phase run sequentially. Missed startup deadlines,
+task errors, or fingerprint mismatches fail the run. Every reply verifies count,
+role, content digest, and stable packed fingerprints without rehashing the input.
+
+GC observations include warmup and retirement and are context only; baseline
+workers can lose their final GC batch at retirement. Retained pool totals are
+cumulative across phases and remain in `retainedAfterClose`; they are absent when
+running this unchanged script on a baseline without the new counters. No provider
+or Gateway is contacted. Run at least two concurrent pairs under one host quiet
+lock, use the current interleaved 16-CPU sides, and swap sides for the second pair.
+Apply the paired-mean and sample-count decision rules; major GC needs at least
+50 collections per side to gate. Set each process's HOME, OPENCLAW_HOME, and
+TMPDIR to its own sandbox, and use the host's production guard and resource limits.
 
 `prompt-cache-history-measure.ts` runs the production `convertToLlm` and history
 fingerprint owner over 400 synthetic assistant messages with text and nested tool
