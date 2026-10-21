@@ -162,11 +162,12 @@ describe("AgentsPage gateway lifecycle", () => {
   });
 
   it("invalidates a queued agent skills clear across a same-client reconnect", async () => {
+    const result = deferred<boolean>();
     const client = createTestGatewayClient(vi.fn(async () => ({ skills: [] })));
     const currentGateway = gateway(snapshot(client));
     const agents = agentsCapability(async () => files("main", "unused"));
     const patch = vi.fn(
-      async (_options: Parameters<ApplicationContext["runtimeConfig"]["patch"]>[0]) => false,
+      (_options: Parameters<ApplicationContext["runtimeConfig"]["patch"]>[0]) => result.promise,
     );
     const runtimeConfig = {
       state: {},
@@ -182,7 +183,7 @@ describe("AgentsPage gateway lifecycle", () => {
       runtimeConfig,
     });
 
-    page.read().agentSkills.onClear("main");
+    const completion = page.read().agentSkills.onClear("main");
     await waitForFast(() => expect(patch).toHaveBeenCalledOnce());
     const canDispatch = vi.mocked(patch).mock.calls[0]?.[0]?.canDispatch;
     expect(canDispatch?.()).toBe(true);
@@ -191,9 +192,11 @@ describe("AgentsPage gateway lifecycle", () => {
     emitGatewaySnapshot(currentGateway, snapshot(client));
 
     expect(canDispatch?.()).toBe(false);
+    result.resolve(false);
+    await expect(completion).resolves.toBeUndefined();
   });
 
-  it("surfaces a rejected agent skills clear in the panel", async () => {
+  it("returns a rejected agent skills clear for the panel's command boundary", async () => {
     const client = createTestGatewayClient(vi.fn(async () => ({ skills: [] })));
     const currentGateway = gateway(snapshot(client));
     const agents = agentsCapability(async () => files("main", "unused"));
@@ -211,10 +214,8 @@ describe("AgentsPage gateway lifecycle", () => {
       runtimeConfig,
     });
 
-    page.read().agentSkills.onClear("main");
-
-    await waitForFast(() =>
-      expect(page.read().readData().agentSkillsError).toBe("Gateway rejected the patch."),
+    await expect(page.read().agentSkills.onClear("main")).rejects.toThrow(
+      "Gateway rejected the patch.",
     );
   });
 

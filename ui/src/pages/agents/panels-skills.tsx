@@ -1,5 +1,16 @@
 import { normalizeLowercaseStringOrEmpty } from "@openclaw/normalization-core/string-coerce";
-import { For, createMemo } from "solid-js";
+import { normalizeStringEntries } from "@openclaw/normalization-core/string-normalization";
+import type { JSX } from "@solidjs/web";
+import {
+  Errored,
+  For,
+  Loading,
+  Show,
+  action,
+  createMemo,
+  createOptimistic,
+  createSignal,
+} from "solid-js";
 import {
   SettingsSection,
   SettingsRow,
@@ -7,7 +18,8 @@ import {
   SettingsEmpty,
 } from "../../components/solid/settings-ui.tsx";
 import { registerSettingsEnglish } from "../../i18n/locales/en-settings.ts";
-import { resolveAgentConfig, resolveAgentSkillsFilter } from "../../lib/agents/display.ts";
+import { resolveAgentConfig } from "../../lib/agents/display.ts";
+import { formatUiError } from "../../lib/format-error.ts";
 import { t } from "../../lib/reactive/i18n.ts";
 import { groupSkills } from "../../lib/skills-grouping.ts";
 import {
@@ -22,23 +34,92 @@ import { AgentPanelAction } from "./panel-ui.tsx";
 
 registerSettingsEnglish();
 
-export function AgentSkills(
-  params: AgentConfigActions &
-    AgentsPageView["agentSkills"] &
-    Pick<AgentsPageView, "readData"> & {
-      agentId: string;
-      configForm: Record<string, unknown> | null;
-      canPatchConfig: boolean;
-    },
+type AgentSkillsProps = AgentConfigActions &
+  AgentsPageView["agentSkills"] &
+  Pick<AgentsPageView, "readData"> & {
+    agentId: string;
+    configForm: Record<string, unknown> | null;
+    canPatchConfig: boolean;
+  };
+
+export function AgentSkills(params: AgentSkillsProps) {
+  const scope = createMemo(() => `${params.agentId}:${params.readData().requestGeneration}`);
+  return (
+    <Show when={scope()} keyed>
+      {(_scope) => {
+        const config = createMemo(() => resolveAgentConfig(params.configForm, params.agentId));
+        const [explicit, setExplicit] = createOptimistic(() =>
+          Array.isArray(config().entry?.skills),
+        );
+        const [resetting, setResetting] = createOptimistic(false);
+        const [command, setCommand] = createSignal<Promise<void> | null>(null);
+        const allowlist = createMemo(() => {
+          const skills = explicit() ? config().entry?.skills : config().defaults?.skills;
+          return Array.isArray(skills) ? normalizeStringEntries(skills) : undefined;
+        });
+        const reset = action(function* (completion: Promise<void>) {
+          setExplicit(false);
+          setResetting(true);
+          yield completion;
+        });
+        const onClear = () => {
+          const completion = params.onClear(params.agentId);
+          if (!completion) {
+            return;
+          }
+          const operation = reset(completion);
+          void operation.catch(() => undefined);
+          setCommand(() => operation);
+        };
+        const commandStatus = (
+          <Show when={command()} keyed>
+            {(completion) => {
+              const settled = createMemo(async () => {
+                await completion;
+                return null;
+              });
+              return (
+                <Errored
+                  fallback={(error) => <div class="callout danger">{formatUiError(error())}</div>}
+                >
+                  <Loading fallback={null}>{settled()}</Loading>
+                </Errored>
+              );
+            }}
+          </Show>
+        );
+        return (
+          <AgentSkillsContent
+            {...params}
+            explicit={explicit()}
+            allowlist={allowlist()}
+            resetting={resetting()}
+            commandStatus={commandStatus}
+            onClear={onClear}
+          />
+        );
+      }}
+    </Show>
+  );
+}
+
+function AgentSkillsContent(
+  params: Omit<AgentSkillsProps, "onClear"> & {
+    onClear: () => void;
+    explicit: boolean;
+    allowlist: string[] | undefined;
+    resetting: boolean;
+    commandStatus: JSX.Element;
+  },
 ) {
   const configReady = () =>
-    Boolean(params.configForm) && !params.configLoading && !params.configSaving;
+    Boolean(params.configForm) &&
+    !params.configLoading &&
+    !params.configSaving &&
+    !params.resetting;
   const editable = () => params.canUpdateConfig && configReady();
-  const config = createMemo(() => resolveAgentConfig(params.configForm, params.agentId));
-  const hasExplicitAllowlist = () => Array.isArray(config().entry?.skills);
-  const allowlist = createMemo(() => resolveAgentSkillsFilter(params.configForm, params.agentId));
-  const allowSet = createMemo(() => new Set(allowlist() ?? []));
-  const usingAllowlist = () => allowlist() !== undefined;
+  const allowSet = createMemo(() => new Set(params.allowlist ?? []));
+  const usingAllowlist = () => params.allowlist !== undefined;
   const reportReady = () =>
     Boolean(
       params.readData().agentSkillsReport &&
@@ -72,7 +153,7 @@ export function AgentSkills(
       <div class="callout info">
         {t(
           usingAllowlist()
-            ? !hasExplicitAllowlist()
+            ? !params.explicit
               ? "agents.skillsPanel.inheritedAllowlist"
               : "agents.skillsPanel.customAllowlist"
             : "agents.skillsPanel.allEnabled",
@@ -83,7 +164,9 @@ export function AgentSkills(
       ) : undefined}
       {params.readData().agentSkillsError ? (
         <div class="callout danger">{params.readData().agentSkillsError}</div>
-      ) : undefined}
+      ) : (
+        params.commandStatus
+      )}
       <SettingsSection
         title={t("agents.skillsPanel.title")}
         description={
@@ -104,9 +187,9 @@ export function AgentSkills(
               onClick={() => params.onDisableAll(params.agentId)}
             />
             <AgentPanelAction
-              label={t("common.reset")}
-              disabled={!params.canPatchConfig || !hasExplicitAllowlist() || !configReady()}
-              onClick={() => params.onClear(params.agentId)}
+              label={t(params.resetting ? "common.saving" : "common.reset")}
+              disabled={!params.canPatchConfig || !params.explicit || !configReady()}
+              onClick={() => params.onClear()}
             />
             <AgentConfigButtons {...params}>
               <AgentPanelAction

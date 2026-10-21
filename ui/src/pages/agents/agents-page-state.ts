@@ -775,16 +775,16 @@ export function createAgentsPageState(
       context.runtimeConfig === runtimeConfig &&
       isCurrentRequest(client, generation, agentId, { agents }) &&
       canCall("config.patch", "operator.admin");
-    void clearAgentSkillFilter(runtimeConfig, agentId, canDispatch).then((updated) => {
+    if (!canDispatch()) {
+      return;
+    }
+    return clearAgentSkillFilter(runtimeConfig, agentId, canDispatch).then((updated) => {
       if (!canDispatch()) {
         return;
       }
       if (!updated) {
-        state.agentSkillsError =
-          runtimeConfig.state.lastError ?? t("agents.skillsPanel.updateError");
-        return;
+        throw new Error(runtimeConfig.state.lastError ?? t("agents.skillsPanel.updateError"));
       }
-      state.agentSkillsError = null;
       void loadAgentSkills(state, agentId);
     });
   }
