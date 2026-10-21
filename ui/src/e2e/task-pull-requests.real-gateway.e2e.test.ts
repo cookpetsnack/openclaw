@@ -403,6 +403,12 @@ suite.define(() => {
                       .count(),
                   ).toBe(1);
                 }
+              } catch (error) {
+                console.error(
+                  "Task PR fixture state at failure:",
+                  JSON.stringify({ stage, snapshot: snapshots.at(-1), githubRequests }, null, 2),
+                );
+                throw error;
               } finally {
                 // On red, show the same parent hovercard rather than a transient loading shell.
                 await activate();
