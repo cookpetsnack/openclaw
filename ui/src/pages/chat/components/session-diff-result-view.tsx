@@ -307,21 +307,19 @@ function createSessionDiffResultViews(
 }
 
 export function createSessionDiffPanelFrame(
-  bindings: Omit<SessionDiffViewBindings, "loading">,
+  bindings: SessionDiffViewBindings,
   setMotionInstant: (instant: boolean) => void,
   awaitingDestination: () => boolean,
 ) {
-  return function Panel(panel: { pending: boolean; showResult?: boolean; children?: JSX.Element }) {
-    const viewBindings: SessionDiffViewBindings = { ...bindings, loading: () => panel.pending };
-    const { MobileRail, MobileSummary, DesktopSummary, Summary } =
-      createSessionDiffChrome(viewBindings);
-    const File = createSessionDiffFileView(viewBindings);
-    const { MobileResultBody, ResultBody } = createSessionDiffResultViews(viewBindings, {
-      File,
-      MobileSummary,
-      DesktopSummary,
-      Summary,
-    });
+  const { MobileRail, MobileSummary, DesktopSummary, Summary } = createSessionDiffChrome(bindings);
+  const File = createSessionDiffFileView(bindings);
+  const { MobileResultBody, ResultBody } = createSessionDiffResultViews(bindings, {
+    File,
+    MobileSummary,
+    DesktopSummary,
+    Summary,
+  });
+  function Panel(panel: { children?: JSX.Element }) {
     return (
       <div
         class={[
@@ -332,7 +330,7 @@ export function createSessionDiffPanelFrame(
             "session-diff--mobile": bindings.mobile(),
           },
         ]}
-        aria-busy={panel.pending ? "true" : "false"}
+        aria-busy={bindings.loading() ? "true" : "false"}
         data-instant={bindings.desktop() && bindings.motionInstant() ? "true" : undefined}
         onPointerDown={() => {
           if (bindings.desktop()) {
@@ -348,27 +346,29 @@ export function createSessionDiffPanelFrame(
         <Show when={bindings.mobile()}>
           <MobileRail />
         </Show>
-        {panel.showResult ? (
-          <Show
-            when={panel.pending && awaitingDestination()}
-            fallback={
-              <Show when={bindings.value()}>
-                {(current) => (
-                  <Show when={bindings.mobile()} fallback={<ResultBody value={current()} />}>
-                    <MobileResultBody value={current()} />
-                  </Show>
-                )}
-              </Show>
-            }
-          >
-            <PanelLoadingSkeleton variant="review" label={t("chat.sessionDiff.loading")} />
-          </Show>
-        ) : (
-          panel.children
-        )}
+        {panel.children}
       </div>
     );
-  };
+  }
+  function Result() {
+    return (
+      <Show
+        when={bindings.loading() && awaitingDestination()}
+        fallback={
+          <Show when={bindings.value()}>
+            {(current) => (
+              <Show when={bindings.mobile()} fallback={<ResultBody value={current()} />}>
+                <MobileResultBody value={current()} />
+              </Show>
+            )}
+          </Show>
+        }
+      >
+        <PanelLoadingSkeleton variant="review" label={t("chat.sessionDiff.loading")} />
+      </Show>
+    );
+  }
+  return { Panel, Result };
 }
 
 export function SessionDiffNativeGaps(props: {

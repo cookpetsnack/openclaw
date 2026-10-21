@@ -11,6 +11,7 @@ import {
 } from "../../../test-helpers/native-gateways.ts";
 import { flush, waitForSolid } from "../../../test-helpers/solid-settle.ts";
 import * as diffSyntax from "./chat-diff-highlight.runtime.ts";
+import type { SessionDiffProps } from "./chat-sidebar-content-types.ts";
 import { SessionDiffPanel } from "./session-diff-panel.tsx";
 
 function mountPanel() {

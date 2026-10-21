@@ -175,12 +175,11 @@ export function SessionDiffPanel(props: SessionDiffProps) {
       (current?.owner !== destination.owner || current.scope !== destination.scope)
     );
   };
+  // Observe the same receipt before first paint without suspending the controls.
+  const readStatus = createMemo(() => request().result.promise, { loadingValue: undefined });
   const syncData = createMemo(() => {
     const current = value();
-    if (current?.owner !== props.owner) {
-      return null;
-    }
-    const { root, branch } = current?.result ?? {};
+    const { root, branch } = current?.owner === props.owner ? current.result : {};
     return root && branch
       ? {
           root,
@@ -580,7 +579,12 @@ export function SessionDiffPanel(props: SessionDiffProps) {
       }
     };
   }
-  const viewBindings: Omit<SessionDiffViewBindings, "loading"> = {
+  const viewBindings: SessionDiffViewBindings = {
+    loading: () =>
+      isPending(readStatus) ||
+      (latest(readStatus) === undefined
+        ? Boolean(props.loader)
+        : latest(readStatus) === null && awaitingDestination()),
     props,
     desktop,
     mobile,
@@ -639,8 +643,11 @@ export function SessionDiffPanel(props: SessionDiffProps) {
     },
     renderMobileSync,
   };
-  const Panel = createSessionDiffPanelFrame(viewBindings, setMotionInstant, awaitingDestination);
-  const readFailure = () => (isPending(readiness) ? null : latest(readiness));
+  const { Panel, Result } = createSessionDiffPanelFrame(
+    viewBindings,
+    setMotionInstant,
+    awaitingDestination,
+  );
   const raiseReadFailure = (error: unknown): never => {
     throw error;
   };
@@ -652,24 +659,19 @@ export function SessionDiffPanel(props: SessionDiffProps) {
           refresh={() => setGapRevision((revision) => revision + 1)}
         />
       </Show>
-      <Loading
-        on={latest(presentationScope)}
-        fallback={
-          <Panel pending={Boolean(props.loader)}>
+      <Panel>
+        <Loading
+          on={latest(presentationScope)}
+          fallback={
             <Show when={props.loader}>
               <PanelLoadingSkeleton variant="review" label={t("chat.sessionDiff.loading")} />
             </Show>
-          </Panel>
-        }
-      >
-        <Show
-          when={readFailure()}
-          fallback={<Panel pending={isPending(readiness) || awaitingDestination()} showResult />}
+          }
         >
-          {(failed) => (
-            <Errored
-              fallback={(error, reset) => (
-                <Panel pending={false}>
+          <Show when={isPending(readiness) ? null : latest(readiness)} fallback={<Result />}>
+            {(failed) => (
+              <Errored
+                fallback={(error, reset) => (
                   <div class="callout danger">
                     {formatUiError(error())}
                     <Show when={mobile()}>
@@ -687,14 +689,14 @@ export function SessionDiffPanel(props: SessionDiffProps) {
                       </button>
                     </Show>
                   </div>
-                </Panel>
-              )}
-            >
-              {raiseReadFailure(failed().error)}
-            </Errored>
-          )}
-        </Show>
-      </Loading>
+                )}
+              >
+                {raiseReadFailure(failed().error)}
+              </Errored>
+            )}
+          </Show>
+        </Loading>
+      </Panel>
       <Show when={menu()} keyed>
         {(current) => (
           <SessionDiffMenu
