@@ -43,10 +43,10 @@ it("leaves the avatar route before its admitted generation settles", async () =>
     hello: gatewayHelloForMethods(["agents.update", "agents.avatar.generate"]),
   });
   const agents = agentsCapability(async () => ({ agentId: "main", workspace: "", files: [] }));
-  const context = pageContext(currentGateway, agents);
-  completeContext(context);
+  const baseContext = pageContext(currentGateway, agents);
+  completeContext(baseContext);
   const routeData = {
-    ...agentsRouteData(currentGateway, agentsList, "main", context.settingsAgentSelection),
+    ...agentsRouteData(currentGateway, agentsList, "main", baseContext.settingsAgentSelection),
     panel: "overview" as const,
   };
   const router = createRouter<
@@ -67,7 +67,7 @@ it("leaves the avatar route before its admitted generation settles", async () =>
       }),
     ],
   });
-  context.router = router;
+  const context: ApplicationContext = { ...baseContext, router };
   const convert = vi
     .spyOn(avatarImage, "svgToAvatarDataUrl")
     .mockResolvedValue({ ok: true, dataUrl: "data:image/png;base64,YXZhdGFy" });
