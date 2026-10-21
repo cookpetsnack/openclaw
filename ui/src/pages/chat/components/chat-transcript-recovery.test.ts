@@ -3,6 +3,7 @@
 import { expectDefined } from "@openclaw/normalization-core";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createDeferred } from "../../../../../test/helpers/promise.js";
+import { waitForFast } from "../../../test-helpers/wait-for.ts";
 import { resetChatViewState } from "../chat-view-state.test-support.ts";
 import { renderChatThread, TranscriptTestHost } from "../test-helpers/chat-transcript-native.tsx";
 import type { SidebarFullMessageLoader } from "./chat-sidebar-content-types.ts";
@@ -87,12 +88,12 @@ describe("chat transcript full-message recovery", () => {
     const pending = createDeferred<FullMessageResult>();
     const load = vi.fn<SidebarFullMessageLoader>().mockImplementation(() => pending.promise);
     const pane = mountTranscript("recovery-active-search", load);
-    await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+    await waitForFast(() => expect(load).toHaveBeenCalledOnce());
     await searchTranscript(pane, "lunarneedle");
     expect(pane.querySelector(".chat-bubble")).toBeNull();
 
     pending.resolve(fullMessage("The restored exhibit is lunarneedle."));
-    await vi.waitFor(() =>
+    await waitForFast(() =>
       expect(pane.querySelector(".chat-bubble")?.textContent).toContain("lunarneedle"),
     );
     expect(load).toHaveBeenCalledOnce();
@@ -153,7 +154,7 @@ describe("chat transcript full-message recovery", () => {
   it("keeps the preview through bounded retries and recovers on manual retry", async () => {
     const load = vi.fn<SidebarFullMessageLoader>().mockRejectedValue(new Error("offline"));
     const pane = mountTranscript("recovery-unavailable", load);
-    await vi.waitFor(() => expect(pane.textContent).toContain("Could not load the full message."));
+    await waitForFast(() => expect(pane.textContent).toContain("Could not load the full message."));
     expect(load).toHaveBeenCalledTimes(3);
     expect(pane.textContent).toContain("Preview");
     expect(pane.textContent).toContain("...(truncated)...");
@@ -164,7 +165,7 @@ describe("chat transcript full-message recovery", () => {
       pane.querySelector<HTMLButtonElement>(".chat-message-load-error__retry"),
       "full-message retry",
     ).click();
-    await vi.waitFor(() => expect(pane.textContent).toContain("Available after retry."));
+    await waitForFast(() => expect(pane.textContent).toContain("Available after retry."));
     expect(load).toHaveBeenCalledTimes(4);
   });
 
@@ -178,10 +179,10 @@ describe("chat transcript full-message recovery", () => {
         .mockImplementationOnce(() => retired.promise)
         .mockImplementationOnce(() => current.promise);
       const pane = mountTranscript("recovery-reconnect", load);
-      await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+      await waitForFast(() => expect(load).toHaveBeenCalledOnce());
       if (phase === "loaded") {
         retired.resolve(fullMessage("Retired body."));
-        await vi.waitFor(() => expect(pane.textContent).toContain("Retired body."));
+        await waitForFast(() => expect(pane.textContent).toContain("Retired body."));
       }
 
       // Keep retained rows and pane state so only the controller owns invalidation.
@@ -189,7 +190,7 @@ describe("chat transcript full-message recovery", () => {
       pane.remove();
       document.body.append(pane);
       pane.requestRender();
-      await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(2));
+      await waitForFast(() => expect(load).toHaveBeenCalledTimes(2));
       await pane.updateComplete;
       await flushDeferredRowPrune();
       expect(pane.textContent).not.toContain("Retired body.");
@@ -203,7 +204,7 @@ describe("chat transcript full-message recovery", () => {
       }
 
       current.resolve(fullMessage("Current body."));
-      await vi.waitFor(() => expect(pane.textContent).toContain("Current body."));
+      await waitForFast(() => expect(pane.textContent).toContain("Current body."));
       expect(load).toHaveBeenCalledTimes(2);
     },
   );
@@ -213,9 +214,9 @@ describe("chat transcript full-message recovery", () => {
       .fn<SidebarFullMessageLoader>()
       .mockResolvedValue(fullMessage("Original answer."));
     const first = mountTranscript("recovery-split-first", load);
-    await vi.waitFor(() => expect(first.textContent).toContain("Original answer."));
+    await waitForFast(() => expect(first.textContent).toContain("Original answer."));
     const sibling = mountTranscript("recovery-split-second", load);
-    await vi.waitFor(() => expect(sibling.textContent).toContain("Original answer."));
+    await waitForFast(() => expect(sibling.textContent).toContain("Original answer."));
     const loadedRequests = load.mock.calls.length;
 
     first.remove();
@@ -226,8 +227,8 @@ describe("chat transcript full-message recovery", () => {
 
     load.mockResolvedValue(fullMessage("Recovered after remount."));
     const replacement = mountTranscript("recovery-split-first", load);
-    await vi.waitFor(() => expect(load).toHaveBeenCalledTimes(loadedRequests + 1));
-    await vi.waitFor(() => expect(replacement.textContent).toContain("Recovered after remount."));
+    await waitForFast(() => expect(load).toHaveBeenCalledTimes(loadedRequests + 1));
+    await waitForFast(() => expect(replacement.textContent).toContain("Recovered after remount."));
     expect(sibling.textContent).toContain("Original answer.");
   });
 
@@ -238,7 +239,7 @@ describe("chat transcript full-message recovery", () => {
       .mockImplementationOnce(() => pending.promise)
       .mockResolvedValue(fullMessage("Current answer."));
     const retired = mountTranscript("recovery-remount", load);
-    await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+    await waitForFast(() => expect(load).toHaveBeenCalledOnce());
     retired.remove();
     const current = mountTranscript("recovery-remount", load);
     await current.updateComplete;
@@ -248,14 +249,14 @@ describe("chat transcript full-message recovery", () => {
     pending.resolve(fullMessage("Retired answer."));
     await flushDeferredRowPrune();
     expect(retiredUpdates).not.toHaveBeenCalled();
-    await vi.waitFor(() => expect(current.textContent).toContain("Current answer."));
+    await waitForFast(() => expect(current.textContent).toContain("Current answer."));
     expect(current.textContent).not.toContain("Retired answer.");
   });
 
   it.each(["session", "agent"] as const)("scopes recovery to the requested %s", async (scope) => {
     const load = vi.fn<SidebarFullMessageLoader>().mockResolvedValue(fullMessage("First scope."));
     const pane = mountTranscript("recovery-routing", load, "global");
-    await vi.waitFor(() => expect(pane.textContent).toContain("First scope."));
+    await waitForFast(() => expect(pane.textContent).toContain("First scope."));
     await searchTranscript(pane, "First scope");
     expect(pane.querySelector(".chat-bubble")?.textContent).toContain("First scope.");
 
@@ -270,7 +271,7 @@ describe("chat transcript full-message recovery", () => {
     await pane.updateComplete;
     expect(pane.querySelector(".chat-bubble")).toBeNull();
     toggleTranscriptSearch(pane.props.paneId);
-    await vi.waitFor(() => expect(pane.textContent).toContain("Second scope."));
+    await waitForFast(() => expect(pane.textContent).toContain("Second scope."));
     expect(load).toHaveBeenLastCalledWith({
       sessionKey: pane.props.sessionKey,
       agentId: pane.props.fullMessageAgentId,
@@ -301,7 +302,7 @@ describe("chat transcript full-message recovery", () => {
     ];
     pane.props.messages = [];
     pane.props.pendingInputs = pendingInputs;
-    await vi.waitFor(() => expect(pane.textContent).toContain("Accepted input."));
+    await waitForFast(() => expect(pane.textContent).toContain("Accepted input."));
     pane.requestRender();
     await pane.updateComplete;
     expect(load).toHaveBeenCalledOnce();
@@ -318,7 +319,7 @@ describe("chat transcript full-message recovery", () => {
     await pane.updateComplete;
     expect(pane.querySelector(".chat-bubble")).toBeNull();
     toggleTranscriptSearch(pane.props.paneId);
-    await vi.waitFor(() => expect(pane.textContent).toContain("Revisited input."));
+    await waitForFast(() => expect(pane.textContent).toContain("Revisited input."));
     expect(load).toHaveBeenCalledTimes(2);
   });
 
@@ -327,7 +328,7 @@ describe("chat transcript full-message recovery", () => {
       .fn<SidebarFullMessageLoader>()
       .mockResolvedValue(fullMessage("Recovered body."));
     const pane = mountTranscript("recovery-replaced-source", load);
-    await vi.waitFor(() => expect(pane.textContent).toContain("Recovered body."));
+    await waitForFast(() => expect(pane.textContent).toContain("Recovered body."));
     await searchTranscript(pane, "Recovered body");
     expect(pane.querySelector(".chat-bubble")?.textContent).toContain("Recovered body.");
 
@@ -354,7 +355,7 @@ describe("chat transcript full-message recovery", () => {
       .mockImplementationOnce(() => first.promise)
       .mockImplementationOnce(() => second.promise);
     const pane = mountTranscript("recovery-pending-pruning", load);
-    await vi.waitFor(() => expect(load).toHaveBeenCalledOnce());
+    await waitForFast(() => expect(load).toHaveBeenCalledOnce());
 
     pane.props.messages = [];
     pane.requestRender();
@@ -370,6 +371,6 @@ describe("chat transcript full-message recovery", () => {
     expect(pane.textContent).not.toContain("Obsolete body.");
 
     second.resolve(fullMessage("Replacement body."));
-    await vi.waitFor(() => expect(pane.textContent).toContain("Replacement body."));
+    await waitForFast(() => expect(pane.textContent).toContain("Replacement body."));
   });
 });
