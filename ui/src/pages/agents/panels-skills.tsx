@@ -9,6 +9,7 @@ import {
   createMemo,
   createOptimistic,
   createSignal,
+  onSettled,
 } from "solid-js";
 import {
   SettingsSection,
@@ -51,7 +52,7 @@ export function AgentSkills(params: AgentSkillsProps) {
           Array.isArray(config().entry?.skills),
         );
         const [resetting, setResetting] = createOptimistic(false);
-        const [command, setCommand] = createSignal<Promise<void> | null>(null);
+        const [command, setCommand] = createSignal<{ completion: Promise<void> } | null>(null);
         const allowlist = createMemo(() => {
           const skills = explicit() ? config().entry?.skills : config().defaults?.skills;
           return Array.isArray(skills) ? normalizeStringEntries(skills) : undefined;
@@ -66,9 +67,11 @@ export function AgentSkills(params: AgentSkillsProps) {
           if (!completion) {
             return;
           }
-          const operation = reset(completion);
-          void operation.catch(() => undefined);
-          setCommand(() => operation);
+          setCommand({ completion });
+          // Publish the new receipt before the action holds its pending frame.
+          onSettled(() => {
+            void reset(completion).catch(() => undefined);
+          });
         };
         return (
           <AgentSkillsContent
@@ -91,7 +94,7 @@ function AgentSkillsContent(
     explicit: boolean;
     allowlist: string[] | undefined;
     resetting: boolean;
-    command: Promise<void> | null;
+    command: { completion: Promise<void> } | null;
   },
 ) {
   const configReady = () =>
@@ -148,19 +151,13 @@ function AgentSkillsContent(
         <div class="callout danger">{params.readData().agentSkillsError}</div>
       ) : (
         <Show when={params.command} keyed>
-          {(completion) => {
-            const settled = createMemo(async () => {
-              await completion;
-              return null;
-            });
-            return (
-              <Errored
-                fallback={(error) => <div class="callout danger">{formatUiError(error())}</div>}
-              >
-                <Loading fallback={null}>{settled()}</Loading>
-              </Errored>
-            );
-          }}
+          {(command) => (
+            <Errored
+              fallback={(error) => <div class="callout danger">{formatUiError(error())}</div>}
+            >
+              <AgentSkillsResetCompletion completion={command.completion} />
+            </Errored>
+          )}
         </Show>
       )}
       <SettingsSection
@@ -290,4 +287,12 @@ function AgentSkillsContent(
       </SettingsSection>
     </>
   );
+}
+
+function AgentSkillsResetCompletion(params: { completion: Promise<void> }) {
+  const settled = createMemo(async () => {
+    await params.completion;
+    return null;
+  });
+  return <Loading fallback={null}>{settled()}</Loading>;
 }
