@@ -18,9 +18,9 @@ import {
 import {
   hasSessionChangedAncestorCoverage,
   matchesExistingSession,
-  parseSessionChangedEvent,
   reconcileParsedSessionChangedRow,
-  sessionChangedSnapshots,
+  type PreparedSessionChangedEvent,
+  type ParsedSessionChangedEvent,
 } from "./session-row-reconcile.ts";
 import type {
   SessionGateway,
@@ -36,13 +36,13 @@ type SessionListRowLookup = (key: string, agentId?: string | null) => GatewaySes
 /** Held members and certified query exclusions can replace a list read. */
 export function canApplySessionListSnapshot(
   result: SessionsListResult | null,
-  payload: unknown,
+  prepared: PreparedSessionChangedEvent,
   options: SessionListOptions,
   sortBy: "updatedAt" | "activity" = "updatedAt",
   observedRow?: SessionListRowLookup,
   viewerProfileId?: string,
 ): boolean {
-  const parsed = parseSessionChangedEvent(payload);
+  const parsed = prepared.snapshots[0];
   const countsOnly = options.includeOwnerSessionCounts === true;
   if (
     !result ||
@@ -67,7 +67,7 @@ export function canApplySessionListSnapshot(
   ) {
     return false;
   }
-  const [, event] = parsed;
+  const { event } = parsed;
   if (
     !asOptionalRecord(event.session) ||
     event.catalogChanged === true ||
@@ -76,15 +76,14 @@ export function canApplySessionListSnapshot(
   ) {
     return false;
   }
-  const snapshots = sessionChangedSnapshots(payload);
+  const { snapshots } = prepared;
   const complete = Array.isArray(event.ancestorSessions);
   let covered = false;
-  for (const snapshot of snapshots) {
-    const parsedSnapshot = parseSessionChangedEvent(snapshot);
+  for (const parsedSnapshot of snapshots) {
     if (!parsedSnapshot) {
       return false;
     }
-    const [info, , source] = parsedSnapshot;
+    const { info, source } = parsedSnapshot;
     const agentId = info.agentId ?? parseAgentSessionKey(info.key)?.agentId;
     if (
       options.agentId &&
@@ -102,7 +101,7 @@ export function canApplySessionListSnapshot(
     if (parent && areUiSessionKeysEquivalent(info.key, parent)) {
       // A parent cannot belong to its own child query. Its own event must still
       // certify unchanged children; ancestor copies accompany the child's facts.
-      if (snapshot === payload) {
+      if (parsedSnapshot === snapshots[0]) {
         const children = source.childSessions;
         if (
           !complete ||
@@ -314,17 +313,21 @@ export function sessionListAgentMatcher(agentId?: string | null) {
 }
 
 /** Capture membership before event reconciliation can remove or move a known child. */
-export function sessionListEventMatcher(payload: unknown) {
-  const matches = sessionChangedSnapshots(payload).map(sessionListSnapshotMatcher);
+export function sessionListEventMatcher(prepared: PreparedSessionChangedEvent) {
+  const matches = prepared.snapshots.map((snapshot) =>
+    sessionListSnapshotMatcher(snapshot, prepared.event),
+  );
   return (scope: SessionListScope, result?: SessionsListResult | null): boolean =>
     matches.some((match) => match(scope, result));
 }
 
-function sessionListSnapshotMatcher(payload: unknown) {
-  const parsed = parseSessionChangedEvent(payload);
-  const info = parsed?.[0];
-  const event = parsed?.[1] ?? asOptionalRecord(payload);
-  const source = parsed?.[2];
+function sessionListSnapshotMatcher(
+  parsed: ParsedSessionChangedEvent | null,
+  envelope: PreparedSessionChangedEvent["event"],
+) {
+  const info = parsed?.info;
+  const event = parsed?.event ?? envelope;
+  const source = parsed?.source;
   const matchesAgent = sessionListAgentMatcher(
     info?.agentId ??
       parseAgentSessionKey(info?.key)?.agentId ??
@@ -475,7 +478,7 @@ export type ManagedSessionList = ObservedSessionList & {
 
 export function sessionListsNeedingEventRefresh(
   lists: Iterable<ManagedSessionList>,
-  payload: unknown,
+  prepared: PreparedSessionChangedEvent,
   matches: ReturnType<typeof sessionListEventMatcher>,
   observedRow: SessionListRowLookup,
   connectionEpoch: number | null,
@@ -489,7 +492,7 @@ export function sessionListsNeedingEventRefresh(
         entry.snapshot.error !== null ||
         !canApplySessionListSnapshot(
           entry.snapshot.result,
-          payload,
+          prepared,
           entry.scope,
           "updatedAt",
           observedRow,
@@ -516,24 +519,40 @@ export function sessionListReadNeedsEventRefresh(
     response?.limitApplied ??
     options.limit ??
     DEFAULT_SESSION_LIST_QUERY.limit;
+  let acceptedRows: ReturnType<typeof indexSessionListRows> | undefined;
+  let latestRows: ReturnType<typeof indexSessionListRows> | undefined;
   return (
     previous?.sessions.some((row) => {
       if (rowRevision(row) <= issuedRevision) {
         return false;
       }
+      if (!response || !result) {
+        return true;
+      }
+      acceptedRows ??= indexSessionListRows(response);
+      latestRows ??= result === response ? acceptedRows : indexSessionListRows(result);
       const matches = (candidate: GatewaySessionRow) =>
-        candidate.sessionId === row.sessionId &&
         matchesExistingSession(candidate, row.key, options.agentId ?? row.agentId ?? null);
-      const accepted = response?.sessions.find(matches);
-      const latest = result?.sessions.find(matches);
+      const accepted = acceptedRows.get(row.sessionId)?.find(matches);
+      const latest = latestRows.get(row.sessionId)?.find(matches);
       return (
-        !response ||
-        !accepted ||
-        !latest ||
-        crossesSharedSessionWindow(response, accepted, latest, windowSize)
+        !accepted || !latest || crossesSharedSessionWindow(response, accepted, latest, windowSize)
       );
     }) ?? false
   );
+}
+
+function indexSessionListRows(result: SessionsListResult) {
+  const rows = new Map<string | undefined, GatewaySessionRow[]>();
+  for (const row of result.sessions) {
+    const candidates = rows.get(row.sessionId);
+    if (candidates) {
+      candidates.push(row);
+    } else {
+      rows.set(row.sessionId, [row]);
+    }
+  }
+  return rows;
 }
 
 export function isPrimarySessionListQuery(options: SessionListScope): boolean {

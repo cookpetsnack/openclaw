@@ -1,4 +1,13 @@
-export type SessionDataProbeOwner = {
+import type { SessionDataOwner } from "../components/session-data.ts";
+
+export type SessionDataProbeOwner = Pick<
+  SessionDataOwner,
+  | "sessionsResult"
+  | "sessionResultsByAgent"
+  | "childSessionRowsByParent"
+  | "activeSessionLineageRoot"
+  | "activeSessionLineageSelectedRow"
+> & {
   requestSessionDataUpdate: (...args: unknown[]) => unknown;
 };
 export type SolidSidebarProbeOwner = {

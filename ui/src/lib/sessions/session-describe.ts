@@ -6,9 +6,8 @@ import {
   parseAgentSessionKey,
 } from "./session-key.ts";
 import {
-  parseSessionChangedEvent,
   reconcileParsedSessionChangedRow,
-  sessionChangedSnapshots,
+  type PreparedSessionChangedEvent,
 } from "./session-row-reconcile.ts";
 import type {
   SessionConnectionOwner,
@@ -151,20 +150,17 @@ export function createSessionDescribeReads(host: {
   return {
     describe,
     clear: () => reads.clear(),
-    invalidateEvent(payload: unknown) {
-      const completeAncestors = Array.isArray(
-        parseSessionChangedEvent(payload)?.[1].ancestorSessions,
-      );
+    invalidateEvent(prepared: PreparedSessionChangedEvent) {
+      const completeAncestors = Array.isArray(prepared.snapshots[0]?.event.ancestorSessions);
       // An unlisted ancestor can belong to another agent or sit outside every
       // held roster. No descriptor from before an incomplete tree event is certified.
       if (!completeAncestors) {
         reads.clear();
         return;
       }
-      const targets = sessionChangedSnapshots(payload).flatMap((snapshot) => {
-        const target = parseSessionChangedEvent(snapshot);
+      const targets = prepared.snapshots.flatMap((target) => {
         // References repeat content already received in the preceding full snapshot.
-        return target && !target[0].isAncestorReference ? [target] : [];
+        return target && !target.info.isAncestorReference ? [target] : [];
       });
       if (!targets.length) {
         reads.clear();
@@ -172,7 +168,7 @@ export function createSessionDescribeReads(host: {
       }
       for (const [key, read] of reads) {
         const agentId = parseAgentSessionKey(read.params.key)?.agentId ?? read.params.agentId;
-        const target = targets.find(([info]) => {
+        const target = targets.find(({ info }) => {
           const targetAgentId = info.agentId ?? parseAgentSessionKey(info.key)?.agentId;
           return (
             areUiSessionKeysEquivalent(info.key, read.params.key) &&
@@ -187,21 +183,21 @@ export function createSessionDescribeReads(host: {
         const previous = read.result?.session;
         const next =
           previous &&
-          target[1].session &&
-          target[0].sessionId === previous.sessionId &&
-          !target[2].rowMode
+          target.event.session &&
+          target.info.sessionId === previous.sessionId &&
+          !target.source.rowMode
             ? reconcileParsedSessionChangedRow(previous, target, { archivedFilter: "all" })
                 .admittedRow
             : undefined;
         if (next) {
           // Full events include previews; omission clears them despite roster preservation.
-          if (!read.params.includeDerivedTitles || target[2].derivedTitle === undefined) {
+          if (!read.params.includeDerivedTitles || target.source.derivedTitle === undefined) {
             delete next.derivedTitle;
           }
-          if (!read.params.includeLastMessage || target[2].lastMessagePreview === undefined) {
+          if (!read.params.includeLastMessage || target.source.lastMessagePreview === undefined) {
             delete next.lastMessagePreview;
           }
-          if (!read.params.includeLastMessage || target[2].lastAssistantMessage === undefined) {
+          if (!read.params.includeLastMessage || target.source.lastAssistantMessage === undefined) {
             delete next.lastAssistantMessage;
           }
           read.result = sampleRuntime({ session: next }, previous);

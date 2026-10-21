@@ -3,17 +3,14 @@ import type { GatewaySessionRow, SessionsListResult } from "../../api/types.ts";
 import { t } from "../../i18n/index.ts";
 import { isGatewayMethodAdvertised } from "../gateway-methods.ts";
 import type { GitHubPublicationOwner } from "./github-publication-owner.ts";
-import {
-  readSessionChangedEvent,
-  reconcileSessionChanged,
-  reconcileSessionHistory,
-} from "./reconcile.ts";
+import { reconcileSessionChanged, reconcileSessionHistory } from "./reconcile.ts";
 import type { createSessionDeletions } from "./session-deletions.ts";
 import {
   isUiGlobalSessionKey,
   resolveUiConversationIdentity,
   scopedSessionArtifactKey,
 } from "./session-key.ts";
+import type { PreparedSessionChangedEvent } from "./session-row-reconcile.ts";
 import type {
   GitHubPublicationBinding,
   SessionConnectionOwner,
@@ -192,11 +189,11 @@ export function createSessionGitHubPublication(host: Host) {
           : row;
       });
     },
-    observeEvent(payload: unknown) {
+    observeEvent(prepared: PreparedSessionChangedEvent) {
       if (entries.size === 0) {
         return;
       }
-      const event = readSessionChangedEvent(payload);
+      const event = prepared.snapshots[0]?.info;
       // Global events without an agent cannot identify which admitted operation they affect.
       if (!event || (isUiGlobalSessionKey(event.key) && !event.agentId)) {
         return;
@@ -204,13 +201,13 @@ export function createSessionGitHubPublication(host: Host) {
       const key = keyFor({ key: event.key }, event.agentId);
       reconcile((row, retainedKey) =>
         retainedKey === key
-          ? reconcileSessionChanged(snapshotFor(row), payload, {
+          ? reconcileSessionChanged(snapshotFor(row), prepared, {
               archivedFilter: "all",
               selectedGlobalAgentId: row.agentId,
             }).result?.sessions[0]
           : row,
       );
-      if (asNullableRecord(payload)?.reason === "github-publication") {
+      if (prepared.event?.reason === "github-publication") {
         const entry = entries.get(key);
         if (entry?.current()) {
           entry.publication.invalidate();

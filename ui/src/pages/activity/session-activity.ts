@@ -171,9 +171,11 @@ export function reconcileSessionActivity(
           ? provenance.inheritRow({ ...row, activitySummary: existing.activitySummary }, row)
           : row;
       },
+      undefined,
+      compareSessionActivity,
     ).result;
     if (next) {
-      nextResult = { ...next, sessions: next.sessions.toSorted(compareSessionActivity) };
+      nextResult = next;
     }
   }
   return { result: nextResult, requiresRefresh };

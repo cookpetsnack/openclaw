@@ -185,14 +185,6 @@ function sessionAgentId(
   return null;
 }
 
-function recordValue(record: Record<string, unknown>, key: string): unknown {
-  return Object.hasOwn(record, key) ? record[key] : undefined;
-}
-
-function recordString(record: Record<string, unknown>, key: string): string | undefined {
-  return stringValue(recordValue(record, key));
-}
-
 function sessionRunStatus(value: unknown): SessionRunStatus | null {
   return value === "running" ||
     value === "queued" ||
@@ -205,11 +197,24 @@ function sessionRunStatus(value: unknown): SessionRunStatus | null {
     : null;
 }
 
-export type ParsedSessionChangedEvent = readonly [
-  info: SessionChangedEventInfo,
-  event: Record<string, unknown>,
-  source: Record<string, unknown>,
-];
+export type ParsedSessionChangedEvent = Readonly<{
+  info: SessionChangedEventInfo;
+  event: Readonly<Record<string, unknown>>;
+  source: Readonly<Record<string, unknown>>;
+}>;
+
+export type PreparedSessionChangedRow = ParsedSessionChangedEvent &
+  Readonly<{
+    rowFields: Readonly<Record<string, unknown>>;
+    fields: readonly string[];
+    clearedFields: readonly string[];
+    thinkingIdentity: ThinkingMetadataCarrier;
+  }>;
+
+export type PreparedSessionChangedEvent = Readonly<{
+  event: Readonly<Record<string, unknown>> | null;
+  snapshots: readonly (PreparedSessionChangedRow | null)[];
+}>;
 
 // Receipt admission is synchronous: the next event may already reference this row.
 // Copies and local edits cannot certify references by copying a wire revision.
@@ -257,36 +262,42 @@ export function parseSessionChangedEvent(payload: unknown): ParsedSessionChanged
   }
   const session = recordOrNull(event.session);
   // Full viewer snapshots inherit only explicit clearing receipts from the envelope.
-  const source = session
-    ? {
-        ...(Array.isArray(event.ancestorSessions)
-          ? Object.fromEntries(Object.entries(event).filter(([, value]) => value === null))
-          : event),
-        ...session,
+  let source = session ?? event;
+  if (session) {
+    const fullSnapshot = Array.isArray(event.ancestorSessions);
+    for (const field in event) {
+      if (
+        Object.hasOwn(event, field) &&
+        !Object.hasOwn(session, field) &&
+        (!fullSnapshot || event[field] === null)
+      ) {
+        if (source === session) {
+          source = { ...session };
+        }
+        source[field] = event[field];
       }
-    : event;
-  const key = recordString(source, "key") ?? recordString(event, "sessionKey");
+    }
+  }
+  const key = stringValue(source.key) ?? stringValue(event.sessionKey);
   if (!key) {
     return null;
   }
-  const reason = recordString(event, "reason") ?? recordString(source, "reason") ?? null;
-  const sourceHasActiveRun = recordValue(source, "hasActiveRun");
+  const reason = stringValue(event.reason) ?? stringValue(source.reason) ?? null;
+  const sourceHasActiveRun = source.hasActiveRun;
   const hasActiveRun =
-    typeof sourceHasActiveRun === "boolean"
-      ? sourceHasActiveRun
-      : recordValue(event, "hasActiveRun");
-  const archived = recordValue(source, "archived");
-  const updatedAt = recordValue(source, "updatedAt");
-  const snapshotAt = recordValue(source, "snapshotAt");
-  const thinkingLevel = recordValue(source, "thinkingLevel");
+    typeof sourceHasActiveRun === "boolean" ? sourceHasActiveRun : event.hasActiveRun;
+  const archived = source.archived;
+  const updatedAt = source.updatedAt;
+  const snapshotAt = source.snapshotAt;
+  const thinkingLevel = source.thinkingLevel;
   const activeRunIds = Object.hasOwn(source, "activeRunIds")
-    ? recordValue(source, "activeRunIds")
-    : recordValue(event, "activeRunIds");
-  return [
-    {
+    ? source.activeRunIds
+    : event.activeRunIds;
+  return {
+    info: {
       key,
       reason,
-      sessionId: recordString(source, "sessionId"),
+      sessionId: stringValue(source.sessionId),
       updatedAt: typeof updatedAt === "number" ? updatedAt : null,
       snapshotAt:
         typeof snapshotAt === "number" && Number.isFinite(snapshotAt) ? snapshotAt : undefined,
@@ -298,53 +309,97 @@ export function parseSessionChangedEvent(payload: unknown): ParsedSessionChanged
           : thinkingLevel === null
             ? null
             : undefined,
-      agentId: recordString(event, "agentId") ?? null,
-      runId: recordString(event, "runId") ?? recordString(source, "runId") ?? null,
-      clientRunId:
-        recordString(event, "clientRunId") ?? recordString(source, "clientRunId") ?? null,
+      agentId: stringValue(event.agentId) ?? null,
+      runId: stringValue(event.runId) ?? stringValue(source.runId) ?? null,
+      clientRunId: stringValue(event.clientRunId) ?? stringValue(source.clientRunId) ?? null,
       hasActiveRun: typeof hasActiveRun === "boolean" ? hasActiveRun : null,
       activeRunIds: activeRunIds === null || isStringArray(activeRunIds) ? activeRunIds : undefined,
-      status:
-        sessionRunStatus(recordValue(source, "status")) ??
-        sessionRunStatus(recordValue(event, "status")),
+      status: sessionRunStatus(source.status) ?? sessionRunStatus(event.status),
       archived: typeof archived === "boolean" ? archived : null,
       isAncestorReference: event.ancestorSessionRef === true,
     },
     event,
     source,
-  ];
+  };
 }
 
-/** Each authorized ancestor owns its row identity and clock, never the child's event facts. */
-export function sessionChangedSnapshots(payload: unknown): unknown[] {
-  const event = recordOrNull(payload);
-  if (!event || !Array.isArray(event.ancestorSessions)) {
-    return [payload];
+function prepareSessionChangedRow(payload: unknown): PreparedSessionChangedRow | null {
+  const parsed = parseSessionChangedEvent(payload);
+  if (!parsed) {
+    return null;
   }
-  return [
-    payload,
-    ...[
-      ...event.ancestorSessions.map((value) => [value, false] as const),
-      ...(Array.isArray(event.ancestorSessionRefs)
-        ? event.ancestorSessionRefs.map((value) => [value, true] as const)
-        : []),
-    ].flatMap(([value, reference]) => {
-      const row = recordOrNull(value);
-      const key = stringValue(row?.key);
-      if (!row || !key) {
-        return [];
+  const { source } = parsed;
+  const {
+    agentId: _agentId,
+    ancestorRevision: _ancestorRevision,
+    ancestorSessions: _ancestorSessions,
+    ancestorSessionRefs: _ancestorSessionRefs,
+    catalogChanged: _catalogChanged,
+    clientRunId: _clientRunId,
+    compacted: _compacted,
+    key: _key,
+    phase: _phase,
+    reason: _reason,
+    runId: _runId,
+    session: _session,
+    sessionKey: _sessionKey,
+    ts: _ts,
+    ...rowFields
+  } = source;
+  const fields: string[] = [];
+  const clearedFields: string[] = [];
+  for (const field in rowFields) {
+    const value = rowFields[field];
+    if (value !== undefined) {
+      fields.push(field);
+    }
+    if (value === null && !NULLABLE_SESSION_ROW_FIELDS.has(field)) {
+      clearedFields.push(field);
+    }
+  }
+  const runtime = recordOrNull(rowFields.agentRuntime);
+  return {
+    ...parsed,
+    rowFields,
+    fields,
+    clearedFields,
+    thinkingIdentity: {
+      modelProvider: stringValue(rowFields.modelProvider),
+      model: stringValue(rowFields.model),
+      ...(runtime ? { agentRuntime: { id: stringValue(runtime.id) ?? "" } } : {}),
+    },
+  };
+}
+
+/** Prepare wire facts once; each held query still owns admission and field receipts. */
+export function prepareSessionChangedEvent(payload: unknown): PreparedSessionChangedEvent {
+  const event = recordOrNull(payload);
+  const snapshots: (PreparedSessionChangedRow | null)[] = [prepareSessionChangedRow(payload)];
+  if (event && Array.isArray(event.ancestorSessions)) {
+    const append = (values: unknown[], reference: boolean) => {
+      for (const value of values) {
+        const row = recordOrNull(value);
+        const key = stringValue(row?.key);
+        if (!row || !key) {
+          continue;
+        }
+        snapshots.push(
+          prepareSessionChangedRow({
+            session: row,
+            agentId: stringValue(row.agentId) ?? parseAgentSessionKey(key)?.agentId,
+            ts: event.ts,
+            ancestorSessions: [],
+            ...(reference ? { ancestorSessionRef: true } : {}),
+          }),
+        );
       }
-      return [
-        {
-          session: row,
-          agentId: stringValue(row.agentId) ?? parseAgentSessionKey(key)?.agentId,
-          ts: event.ts,
-          ancestorSessions: [],
-          ...(reference ? { ancestorSessionRef: true } : {}),
-        },
-      ];
-    }),
-  ];
+    };
+    append(event.ancestorSessions, false);
+    if (Array.isArray(event.ancestorSessionRefs)) {
+      append(event.ancestorSessionRefs, true);
+    }
+  }
+  return { event, snapshots };
 }
 
 /** Only held ancestors require coverage; complete Gateway ancestry is access-scoped. */
@@ -352,7 +407,7 @@ export function hasSessionChangedAncestorCoverage(
   rows: readonly GatewaySessionRow[],
   key: string,
   parentKeys: readonly (string | null | undefined)[],
-  snapshots?: readonly unknown[],
+  snapshots?: readonly (ParsedSessionChangedEvent | null)[],
 ): boolean {
   return !rows.some(
     (parent) =>
@@ -362,14 +417,14 @@ export function hasSessionChangedAncestorCoverage(
       ) ||
         parent.childSessions?.some((childKey) => areUiSessionKeysEquivalent(childKey, key))) &&
       !snapshots?.some((snapshot) => {
-        const info = parseSessionChangedEvent(snapshot)?.[0];
+        const info = snapshot?.info;
         return info && matchesExistingSession(parent, info.key, info.agentId);
       }),
   );
 }
 
 export function readSessionChangedEvent(payload: unknown): SessionChangedEventInfo | null {
-  return parseSessionChangedEvent(payload)?.[0] ?? null;
+  return parseSessionChangedEvent(payload)?.info ?? null;
 }
 
 // Null source confirms inheritance; omission on a lifecycle event preserves selection.
@@ -489,48 +544,18 @@ export function reconcileSessionRow(
   return { disposition: "accepted", row, admittedRow };
 }
 
-/** List owners may admit a certified snapshot after proving its query membership. */
-export function reconcileSessionChangedRow(
-  existing: GatewaySessionRow | undefined,
-  payload: unknown,
-  options: SessionReconcileOptions & { admitSnapshot?: boolean } = {},
-  project?: SessionChangedRowProjection,
-): SessionChangedRowResult {
-  const parsed = parseSessionChangedEvent(payload);
-  if (!parsed) {
-    return { applied: false, row: existing };
-  }
-  return reconcileParsedSessionChangedRow(existing, parsed, options, project);
-}
-
+/** List owners admit certified snapshots only after proving their query membership. */
 export function reconcileParsedSessionChangedRow(
   existing: GatewaySessionRow | undefined,
-  parsed: ParsedSessionChangedEvent,
+  parsed: PreparedSessionChangedRow,
   options: SessionReconcileOptions & { admitSnapshot?: boolean } = {},
   project?: SessionChangedRowProjection,
 ): SessionChangedRowResult {
-  const [info, event, source] = parsed;
+  const { info, event, source, rowFields, clearedFields, thinkingIdentity } = parsed;
   const { key, reason } = info;
   if (info.isAncestorReference) {
     return reconcileAncestorReference(existing, info, source, options, project);
   }
-  const {
-    agentId: _agentId,
-    ancestorRevision: _ancestorRevision,
-    ancestorSessions: _ancestorSessions,
-    ancestorSessionRefs: _ancestorSessionRefs,
-    catalogChanged: _catalogChanged,
-    clientRunId: _clientRunId,
-    compacted: _compacted,
-    key: _key,
-    phase: _phase,
-    reason: _reason,
-    runId: _runId,
-    session: _session,
-    sessionKey: _sessionKey,
-    ts: _ts,
-    ...rowFields
-  } = source;
   if (
     !info.agentId &&
     (isUiGlobalSessionKey(key) || (!parseAgentSessionKey(key) && !Object.keys(rowFields).length))
@@ -565,14 +590,8 @@ export function reconcileParsedSessionChangedRow(
   if (!existing && (!options.admitSnapshot || !fullSnapshot || !recordOrNull(event.session))) {
     return eventResult;
   }
-  const incomingRuntime = recordOrNull(rowFields.agentRuntime);
-  const incomingThinkingIdentity: ThinkingMetadataCarrier = {
-    modelProvider: stringValue(rowFields.modelProvider),
-    model: stringValue(rowFields.model),
-    ...(incomingRuntime ? { agentRuntime: { id: stringValue(incomingRuntime.id) ?? "" } } : {}),
-  };
   const existingFields =
-    existing && !thinkingMetadataIdentityMatches(incomingThinkingIdentity, existing)
+    existing && !thinkingMetadataIdentityMatches(thinkingIdentity, existing)
       ? stripThinkingMetadata(existing)
       : existing;
   const snapshotAgentId = stringValue(recordOrNull(event.session)?.agentId);
@@ -585,18 +604,11 @@ export function reconcileParsedSessionChangedRow(
     ...(sessionId ? { sessionId } : {}),
     ...(fullSnapshot && snapshotAgentId ? { agentId: snapshotAgentId } : {}),
   };
-  const clearedFields: string[] = [];
-  // Optional wire fields use null as a tombstone; the explicit nullable fields keep null.
-  for (const [field, value] of Object.entries(rowFields)) {
-    if (value === null && !NULLABLE_SESSION_ROW_FIELDS.has(field)) {
-      Reflect.deleteProperty(offered, field);
-      clearedFields.push(field);
-    }
+  for (const field of clearedFields) {
+    Reflect.deleteProperty(offered, field);
   }
-  const fields = [
-    ...Object.keys(rowFields).filter((field) => rowFields[field] !== undefined),
-    ...(existingFields !== existing ? thinkingMetadataFields : []),
-  ];
+  const fields =
+    existingFields !== existing ? [...parsed.fields, ...thinkingMetadataFields] : parsed.fields;
   const reduced = reconcileSessionRow(
     offered,
     existing,

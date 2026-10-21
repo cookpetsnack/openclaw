@@ -40,6 +40,10 @@ import { requestSessionList, sessionListQueryKey } from "./session-requests.ts";
 import { createSessionRosterListReader } from "./session-roster-list-reader.ts";
 import { createSessionMutationRefresh } from "./session-roster-mutation-refresh.ts";
 import { createSessionRosterObservations } from "./session-roster-observations.ts";
+import {
+  prepareSessionChangedEvent,
+  type PreparedSessionChangedEvent,
+} from "./session-row-reconcile.ts";
 import type {
   SessionGateway,
   SessionListOptions,
@@ -131,7 +135,7 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     observedReadRevision?: number,
     immediate = false,
   ) => {
-    const matches = sessionListEventMatcher({ agentId, session: row });
+    const matches = sessionListEventMatcher(prepareSessionChangedEvent({ agentId, session: row }));
     // Adopting a query's accepted row into the primary roster cannot make
     // that supplying query stale. Other membership projections still refresh.
     scheduleManagedLists(
@@ -531,13 +535,14 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
     },
     captureReconciliation: () => observations.captureReconciliation(++requestRevision),
     observations,
-    captureEvent(payload: unknown) {
+    captureEvent(prepared: PreparedSessionChangedEvent) {
+      const state = host.readState();
       const scope = host.connection.capture();
       const revision = ++requestRevision;
-      const matches = sessionListEventMatcher(payload);
+      const matches = sessionListEventMatcher(prepared);
       const lists = sessionListsNeedingEventRefresh(
         managedLists.values(),
-        payload,
+        prepared,
         matches,
         observations.observedRow,
         scope?.epoch ?? null,
@@ -546,8 +551,20 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
       return {
         revision,
         scope,
+        prepared,
         lists,
         affectsPrimary: matches({ agentId: lastListOptions.agentId }),
+        canApplyPrimarySnapshot:
+          state.error === null &&
+          !state.resultCached &&
+          canApplySessionListSnapshot(
+            state.result,
+            prepared,
+            lastListOptions,
+            "updatedAt",
+            observations.observedRow,
+            host.snapshot().selfUser?.id,
+          ),
         ...observations.captureEventDelivery(scope),
       };
     },
@@ -646,22 +663,6 @@ export function createSessionRosterRefresh(host: SessionRosterRefreshHost) {
       return connection && !host.observerError() && agentId
         ? primaryWindows.presentation(replacementOptions(agentId), connection.epoch)
         : null;
-    },
-    canApplyPrimarySnapshot(payload: unknown) {
-      const state = host.readState();
-      return (
-        state &&
-        state.error === null &&
-        !state.resultCached &&
-        canApplySessionListSnapshot(
-          state.result,
-          payload,
-          lastListOptions,
-          "updatedAt",
-          observations.observedRow,
-          host.snapshot().selfUser?.id,
-        )
-      );
     },
     invalidateManagedLists,
     scheduleEvent(

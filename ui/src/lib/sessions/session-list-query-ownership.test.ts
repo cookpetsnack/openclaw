@@ -9,7 +9,11 @@ import {
 } from "./session-capability.test-support.ts";
 import type { SessionListOptions, SessionListSnapshot } from "./session-capability.ts";
 import { sessionRow } from "./session-fixtures.test-support.ts";
-import { canApplySessionListSnapshot } from "./session-list-query.ts";
+import {
+  canApplySessionListSnapshot,
+  sessionListReadNeedsEventRefresh,
+} from "./session-list-query.ts";
+import { prepareSessionChangedEvent } from "./session-row-reconcile.ts";
 
 const row = (key: string, extra: Partial<GatewaySessionRow> = {}) =>
   sessionRow(`agent:main:${key}`, { sessionId: `${key}-session`, ...extra });
@@ -21,6 +25,91 @@ function fixture(request: Request, query: SessionListOptions) {
   onTestFinished(sessions.subscribeList(query, updates));
   return { sessions, updates, refresh: () => sessions.refresh({ agentId: "main", force: true }) };
 }
+
+it.each<{
+  name: string;
+  previous: Partial<GatewaySessionRow>;
+  accepted: Partial<GatewaySessionRow>;
+  refresh: boolean;
+}>([
+  {
+    name: "main alias",
+    previous: { key: "main" },
+    accepted: { key: "agent:main:main" },
+    refresh: false,
+  },
+  {
+    name: "main alias reversed",
+    previous: { key: "agent:main:main" },
+    accepted: { key: "main" },
+    refresh: false,
+  },
+  {
+    name: "owned global alias",
+    previous: { key: "global", kind: "global", agentId: "work" },
+    accepted: { key: "agent:work:main", kind: "global" },
+    refresh: false,
+  },
+  {
+    name: "directional global alias",
+    previous: { key: "agent:work:main", kind: "global" },
+    accepted: { key: "global", kind: "global", agentId: "work" },
+    refresh: true,
+  },
+  {
+    name: "foreign global owner",
+    previous: { key: "global", kind: "global", agentId: "work" },
+    accepted: { key: "global", kind: "global", agentId: "main" },
+    refresh: true,
+  },
+  { name: "new generation", previous: {}, accepted: { sessionId: "replacement" }, refresh: true },
+  {
+    name: "missing generation",
+    previous: { sessionId: undefined },
+    accepted: { sessionId: undefined },
+    refresh: false,
+  },
+])(
+  "preserves $name matching when a read overlaps row changes",
+  ({ previous, accepted, refresh }) => {
+    const incoming = row("same", previous);
+    const candidate = row("same", accepted);
+    const response = sessionsResult([
+      row("unrelated", { sessionId: candidate.sessionId }),
+      candidate,
+    ]);
+    expect(
+      sessionListReadNeedsEventRefresh(
+        sessionsResult([incoming]),
+        response,
+        sessionsResult([candidate]),
+        0,
+        {},
+        () => 1,
+      ),
+    ).toBe(refresh);
+  },
+);
+
+it("keeps the first matching accepted row when overlapping identities repeat", () => {
+  const first = row("same", { updatedAt: 30 });
+  const latest = { ...first, updatedAt: 40 };
+  const response = {
+    ...sessionsResult([first, row("other", { updatedAt: 20 }), { ...first, updatedAt: 10 }]),
+    nextOffset: 1,
+    hasMore: true,
+  };
+  expect(
+    sessionListReadNeedsEventRefresh(
+      sessionsResult([latest]),
+      response,
+      sessionsResult([latest]),
+      0,
+      {},
+      () => 1,
+    ),
+  ).toBe(false);
+});
 
 it.each([
   [200, 60, true],
@@ -44,11 +133,11 @@ it.each([
     const canApply = (ancestor: GatewaySessionRow) =>
       canApplySessionListSnapshot(
         { ...sessionsResult(rows, 2_000), hasMore: true, nextOffset: limit },
-        {
+        prepareSessionChangedEvent({
           reason: "patch",
           session: { ...rows[0], updatedAt: 2_001 },
           ancestorSessions: [ancestor],
-        },
+        }),
         { agentId: "main", limit, ownerFirst: true },
         "updatedAt",
         undefined,

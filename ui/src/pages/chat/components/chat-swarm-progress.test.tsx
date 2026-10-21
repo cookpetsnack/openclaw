@@ -8,12 +8,15 @@ import { GatewayChatEvents } from "../../../api/gateway-chat-events.ts";
 import type { GatewaySessionRow as Row } from "../../../api/types.ts";
 import { i18n } from "../../../i18n/index.ts";
 import { pt_BR } from "../../../i18n/locales/pt-BR.ts";
-import { reconcileSessionChangedRow } from "../../../lib/sessions/reconcile.ts";
 import {
   createGatewayHarness,
   createTestSessionCapability,
   sessionsResult,
 } from "../../../lib/sessions/session-capability.test-support.ts";
+import {
+  prepareSessionChangedEvent,
+  reconcileParsedSessionChangedRow,
+} from "../../../lib/sessions/session-row-reconcile.ts";
 import { SwarmRosterHydrator } from "../../../lib/sessions/swarm-roster.ts";
 import { createTestGatewayClient } from "../../../test-helpers/gateway-client.ts";
 import { mountSolid } from "../../../test-helpers/mount-solid.ts";
@@ -281,7 +284,11 @@ it("renders the same live and settled timers after row-delta ingress", () => {
         payload: { key: childSessionKey, session: wire, ancestorSessions: [] },
       },
       (frame) => {
-        const applied = reconcileSessionChangedRow(reconstructed, frame.payload);
+        const parsed = prepareSessionChangedEvent(frame.payload).snapshots[0];
+        if (!parsed) {
+          throw new Error("Expected a session row event");
+        }
+        const applied = reconcileParsedSessionChangedRow(reconstructed, parsed);
         expect(applied.row).toMatchObject({ key: childSessionKey });
         reconstructed = applied.row!;
       },

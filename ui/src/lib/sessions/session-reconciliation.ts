@@ -7,7 +7,6 @@ import {
   mapSessionResultRows,
   readSessionChangedEvent,
   reconcileSessionChanged,
-  reconcileSessionChangedRow,
   reconcileSessionHistory,
   reconcileSessionRow,
   type SessionChangedResult,
@@ -26,7 +25,10 @@ import type { createSessionMutations } from "./session-mutations.ts";
 import { optimisticSessionRowFields, type SessionPatchRowFact } from "./session-pending-rows.ts";
 import type { createSessionPermissionProjection } from "./session-permission-projection.ts";
 import type { createSessionRosterRefresh } from "./session-roster-refresh.ts";
-import { sessionChangedSnapshots, type SessionChangedEventInfo } from "./session-row-reconcile.ts";
+import {
+  reconcileParsedSessionChangedRow,
+  type SessionChangedEventInfo,
+} from "./session-row-reconcile.ts";
 import type { createSessionThinkingClaims } from "./session-thinking-claims.ts";
 import type {
   SessionConnectionOwner,
@@ -396,7 +398,6 @@ export function createSessionReconciliation(host: Host) {
   };
 
   const reconcileChangedEvent = (
-    payload: unknown,
     eventObservation: ReturnType<ReturnType<typeof createSessionRosterRefresh>["captureEvent"]>,
     options?: SessionReconcileOptions,
   ): {
@@ -416,7 +417,8 @@ export function createSessionReconciliation(host: Host) {
       thinkingClaims,
     } = host;
     const state = host.readState();
-    const eventInfo = readSessionChangedEvent(payload);
+    const { prepared } = eventObservation;
+    const eventInfo = prepared.snapshots[0]?.info ?? null;
     const eventIsCurrent = () =>
       (!eventObservation.scope || connection.isCurrent(eventObservation.scope)) &&
       (!eventInfo ||
@@ -439,8 +441,8 @@ export function createSessionReconciliation(host: Host) {
       return staleEvent();
     }
     const previous = state.result;
-    const invalidationReason = normalizeOptionalString(asNullableRecord(payload)?.reason);
-    githubPublication.observeEvent(payload);
+    const invalidationReason = normalizeOptionalString(prepared.event?.reason);
+    githubPublication.observeEvent(prepared);
     const selectedSessionKey = host.snapshot().sessionKey?.trim();
     const archivesSelectedSession =
       eventInfo?.archived === true &&
@@ -499,7 +501,7 @@ export function createSessionReconciliation(host: Host) {
       const current = projectSessionResultRows(held, projection.projectRows(held?.sessions ?? []));
       const result = reconcileSessionChanged(
         current,
-        payload,
+        prepared,
         ownerOptions,
         (row, previousRow, fields, rowInfo) =>
           projectEventFields(row, previousRow, fields, rowInfo.agentId ?? ownerAgentId, rowInfo),
@@ -532,8 +534,8 @@ export function createSessionReconciliation(host: Host) {
         if (!eventInfo && invalidationReason === "runner-availability") {
           return { row: entry.row, invalidate: "now" };
         }
-        const snapshot = sessionChangedSnapshots(payload).find((candidate) => {
-          const info = readSessionChangedEvent(candidate);
+        const snapshot = prepared.snapshots.find((candidate) => {
+          const info = candidate?.info;
           const agentId = info?.agentId ?? parseAgentSessionKey(info?.key)?.agentId;
           return (
             info &&
@@ -543,8 +545,8 @@ export function createSessionReconciliation(host: Host) {
             deletions.acceptsGeneration(info.key, info.sessionId, agentId)
           );
         });
-        const rowInfo = readSessionChangedEvent(snapshot);
-        if (!rowInfo) {
+        const rowInfo = snapshot?.info;
+        if (!snapshot || !rowInfo) {
           return { row: entry.row };
         }
         if (!entry.row) {
@@ -562,7 +564,7 @@ export function createSessionReconciliation(host: Host) {
           };
         }
         const current = projection.projectFields(entry.row, entry.target.agentId);
-        const reduced = reconcileSessionChangedRow(
+        const reduced = reconcileParsedSessionChangedRow(
           current,
           snapshot,
           {
@@ -573,17 +575,17 @@ export function createSessionReconciliation(host: Host) {
           (row, previousRow, fields) =>
             projectEventFields(row, previousRow, fields, entry.target.agentId, rowInfo),
         );
-        if (snapshot === payload && (reduced.admittedRow || reduced.deletedKey)) {
+        if (snapshot === prepared.snapshots[0] && (reduced.admittedRow || reduced.deletedKey)) {
           admittedDescriptorResult ??= reduced;
         }
         return {
           row: reduced.row ?? null,
           eventResult: reduced,
           ...(!reduced.deletedKey &&
-          (!reduced.admittedRow || !Array.isArray(asNullableRecord(snapshot)?.ancestorSessions))
+          (!reduced.admittedRow || !Array.isArray(snapshot.event.ancestorSessions))
             ? {
                 invalidate:
-                  reduced.admittedRow && asNullableRecord(asNullableRecord(snapshot)?.session)
+                  reduced.admittedRow && asNullableRecord(snapshot.event.session)
                     ? ("later" as const)
                     : ("now" as const),
               }

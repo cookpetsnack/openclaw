@@ -1,6 +1,7 @@
 import { afterEach, expect, it, vi } from "vitest";
 import { reconcileSessionChanged } from "../../ui/src/lib/sessions/reconcile.ts";
 import { sessionsResult } from "../../ui/src/lib/sessions/session-capability.test-support.js";
+import { prepareSessionChangedEvent } from "../../ui/src/lib/sessions/session-row-reconcile.ts";
 import { replaceSessionEntrySync } from "../config/sessions/session-accessor.js";
 import { sessionChanges } from "../sessions/session-row-changes.js";
 import { openOpenClawStateDatabase } from "../state/openclaw-state-db.js";
@@ -207,17 +208,25 @@ it("keeps cold archived ancestor placement and moves through child-event recipie
           ],
           now,
         );
-        const synchronous = reconcileSessionChanged(held, synchronousFrames[index].payload, {
-          resultAgentId: "main",
-          archivedFilter: "all",
-        });
+        const synchronous = reconcileSessionChanged(
+          held,
+          prepareSessionChangedEvent(synchronousFrames[index].payload),
+          {
+            resultAgentId: "main",
+            archivedFilter: "all",
+          },
+        );
         expect(synchronous.result?.sessions.find((row) => row.key === root)?.placement).toEqual(
           rootFields.placement,
         );
-        const reconciled = reconcileSessionChanged(held, frame.payload, {
-          resultAgentId: "main",
-          archivedFilter: "all",
-        });
+        const reconciled = reconcileSessionChanged(
+          held,
+          prepareSessionChangedEvent(frame.payload),
+          {
+            resultAgentId: "main",
+            archivedFilter: "all",
+          },
+        );
         expect(
           reconciled.result?.sessions.find((row) => row.key === root)?.placement,
         ).toMatchObject(rootFields.placement);

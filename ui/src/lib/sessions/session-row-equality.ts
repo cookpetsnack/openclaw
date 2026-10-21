@@ -7,19 +7,30 @@ export function isShallowEqualSessionRow(
 ): boolean {
   const incomingFields: Record<string, unknown> = incoming;
   const existingFields: Record<string, unknown> = existing;
-  const incomingKeys = Object.keys(incoming).filter((key) => key !== "snapshotAt");
-  const existingKeys = Object.keys(existing).filter((key) => key !== "snapshotAt");
-  if (incomingKeys.length !== existingKeys.length) {
-    return false;
-  }
-  return incomingKeys.every((key) => {
+  let fieldCount = 0;
+  for (const key in incoming) {
+    if (key === "snapshotAt") {
+      continue;
+    }
+    fieldCount++;
     const a = incomingFields[key];
     const b = existingFields[key];
-    return (
-      a === b ||
-      (a !== null && b !== null && typeof a === "object" && typeof b === "object"
-        ? JSON.stringify(a) === JSON.stringify(b)
-        : false)
-    );
-  });
+    // Fresh decoded snapshots need value comparison even without shared identities.
+    if (
+      a !== b &&
+      (a === null ||
+        b === null ||
+        typeof a !== "object" ||
+        typeof b !== "object" ||
+        JSON.stringify(a) !== JSON.stringify(b))
+    ) {
+      return false;
+    }
+  }
+  for (const key in existing) {
+    if (key !== "snapshotAt") {
+      fieldCount--;
+    }
+  }
+  return fieldCount === 0;
 }

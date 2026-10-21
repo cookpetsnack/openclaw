@@ -12,12 +12,12 @@ import {
 } from "./session-key.ts";
 import { isShallowEqualSessionRow } from "./session-row-equality.ts";
 
-const enrichmentFields = [
+const enrichmentFields: ReadonlySet<string> = new Set([
   "derivedTitle",
   "lastMessagePreview",
   "lastAssistantMessage",
   "activitySummary",
-] as const;
+]);
 
 /** Row identity and one read revision; individual fields do not carry custody records. */
 export function createSessionRowProvenance() {
@@ -113,22 +113,18 @@ export function createSessionRowProvenance() {
     const olderValues: Record<string, unknown> = older;
     const next = { ...newer, key: current.key };
     // Compact rows and optional enrichment omit fields rather than clearing them.
-    for (const field of [
-      ...enrichmentFields,
-      ...(newer.rowMode === "dashboard" || newer.rowMode === "sidebar"
-        ? Object.keys(older).filter(
-            (name) =>
-              !(
-                newer.rowMode === "sidebar"
-                  ? SESSION_SIDEBAR_ROW_FIELDS
-                  : SESSION_DASHBOARD_ROW_FIELDS
-              ).has(name),
-          )
-        : newer.rowMode === "compact"
-          ? SESSION_ROW_DETAIL_FIELDS
-          : []),
-    ]) {
+    const presented =
+      newer.rowMode === "sidebar"
+        ? SESSION_SIDEBAR_ROW_FIELDS
+        : newer.rowMode === "dashboard"
+          ? SESSION_DASHBOARD_ROW_FIELDS
+          : undefined;
+    for (const field in olderValues) {
       if (
+        (enrichmentFields.has(field) ||
+          (presented && !presented.has(field)) ||
+          (newer.rowMode === "compact" &&
+            SESSION_ROW_DETAIL_FIELDS.some((name) => name === field))) &&
         !Object.hasOwn(next, field) &&
         !observations.get(newer)?.cleared?.has(field) &&
         olderValues[field] !== undefined
@@ -137,14 +133,23 @@ export function createSessionRowProvenance() {
       }
     }
     if (next.swarm && older.swarm) {
+      const previousGroups = new Map<string, (typeof older.swarm.groups)[number]>();
+      for (const group of older.swarm.groups) {
+        if (!previousGroups.has(group.groupId)) {
+          previousGroups.set(group.groupId, group);
+        }
+      }
       next.swarm = {
         ...next.swarm,
         groups: next.swarm.groups.map((group) => {
-          const previous = older.swarm?.groups.find((item) => item.groupId === group.groupId);
+          const previous = previousGroups.get(group.groupId);
           return group.children === undefined &&
             previous?.children &&
-            JSON.stringify({ ...group, children: undefined }) ===
-              JSON.stringify({ ...previous, children: undefined })
+            group.createdAt === previous.createdAt &&
+            group.queued === previous.queued &&
+            group.running === previous.running &&
+            group.done === previous.done &&
+            group.failed === previous.failed
             ? { ...group, children: previous.children }
             : group;
         }),

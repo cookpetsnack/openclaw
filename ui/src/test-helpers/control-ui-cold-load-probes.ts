@@ -596,6 +596,19 @@ function installColdLoadProbes(
         liveInvalidatorOwner.requestSessionDataUpdate = originalLiveInvalidator;
       }
     },
+    readSessionRoster() {
+      if (!solidSidebarOwner) {
+        throw new Error("Final roster capture requires the registered Solid sidebar owner");
+      }
+      const owner = solidSidebarOwner.sessionData;
+      return {
+        sessionsResult: owner.sessionsResult,
+        sessionResultsByAgent: owner.sessionResultsByAgent,
+        childSessionRowsByParent: owner.childSessionRowsByParent,
+        activeSessionLineageRoot: owner.activeSessionLineageRoot,
+        activeSessionLineageSelectedRow: owner.activeSessionLineageSelectedRow,
+      };
+    },
     readLive() {
       return {
         elapsedMs: (liveFinishedAt || performance.now()) - liveStartedAt,

@@ -4,16 +4,17 @@ import { compareSessionRowsByUpdatedAt } from "../../lib/sessions/navigation.ts"
 import { normalizeAgentId, resolveUiConversationIdentity } from "../../lib/sessions/session-key.ts";
 import {
   hasSessionChangedAncestorCoverage,
-  parseSessionChangedEvent,
+  prepareSessionChangedEvent,
+  type ParsedSessionChangedEvent,
+  type PreparedSessionChangedEvent,
   matchesExistingSession,
-  reconcileSessionChangedRow,
-  sessionChangedSnapshots,
+  reconcileParsedSessionChangedRow,
 } from "../../lib/sessions/session-row-reconcile.ts";
 
-export type CurrentWorkChange = NonNullable<ReturnType<typeof parseSessionChangedEvent>>[0] & {
-  snapshot?: unknown;
+export type CurrentWorkChange = ParsedSessionChangedEvent["info"] & {
+  snapshot?: PreparedSessionChangedEvent;
   parentKeys: readonly string[];
-  ancestorSnapshots?: readonly unknown[];
+  ancestorSnapshots?: readonly (ParsedSessionChangedEvent | null)[];
 };
 
 export const CURRENT_WORK_CHANGE_LIMIT = 1_000;
@@ -34,10 +35,14 @@ export function currentWorkIdentity(session: {
 }
 
 export function readCurrentWorkChange(payload: unknown): CurrentWorkChange | null {
-  const parsed = parseSessionChangedEvent(payload);
-  const change = parsed?.[0];
+  return currentWorkChange(prepareSessionChangedEvent(payload));
+}
+
+function currentWorkChange(prepared: PreparedSessionChangedEvent): CurrentWorkChange | null {
+  const parsed = prepared.snapshots[0];
+  const change = parsed?.info;
   const snapshot =
-    Array.isArray(parsed?.[1].ancestorSessions) && parsed?.[1].session ? payload : undefined;
+    Array.isArray(parsed?.event.ancestorSessions) && parsed?.event.session ? prepared : undefined;
   if (
     !change?.sessionId ||
     (!snapshot &&
@@ -51,18 +56,21 @@ export function readCurrentWorkChange(payload: unknown): CurrentWorkChange | nul
   return {
     ...change,
     parentKeys: [
-      parsed?.[2].spawnedBy,
-      parsed?.[2].controlOwnerSessionKey,
-      parsed?.[2].parentSessionKey,
+      parsed?.source.spawnedBy,
+      parsed?.source.controlOwnerSessionKey,
+      parsed?.source.parentSessionKey,
     ].filter((key): key is string => typeof key === "string" && Boolean(key)),
     ...(snapshot ? { snapshot } : {}),
   };
 }
 
 export function readCurrentWorkChanges(payload: unknown): CurrentWorkChange[] {
-  const snapshots = sessionChangedSnapshots(payload);
-  return snapshots.flatMap((snapshot) => {
-    const change = readCurrentWorkChange(snapshot);
+  const { snapshots } = prepareSessionChangedEvent(payload);
+  return snapshots.flatMap((parsed) => {
+    if (!parsed) {
+      return [];
+    }
+    const change = currentWorkChange({ event: parsed.event, snapshots: [parsed] });
     if (change?.snapshot) {
       // Flattened ancestors retain the original event's coverage, including grandparents.
       change.ancestorSnapshots = snapshots;
@@ -95,6 +103,7 @@ export function reconcileCurrentWork(
   let requiresAncestorRefresh = false;
   let requiresMembershipRefresh = false;
   for (const change of changes) {
+    const snapshot = change.snapshot?.snapshots[0];
     const identity = currentWorkIdentity(change);
     const state = rows.get(identity);
     // A stale read can seed a retired child whose lineage still identifies held parents.
@@ -135,20 +144,17 @@ export function reconcileCurrentWork(
         // An unchanged reference for an entirely unheld target changes no query membership.
         continue;
       }
-      if (
-        isCronRunSessionKey(change.key) ||
-        (change.snapshot && parseSessionChangedEvent(change.snapshot)?.[2].isDock === true)
-      ) {
+      if (isCronRunSessionKey(change.key) || snapshot?.source.isDock === true) {
         continue;
       }
       if (
-        change.snapshot &&
+        snapshot &&
         change.reason !== "delete" &&
         change.hasActiveRun === true &&
         !result.hasMore &&
         rows.size < (result.limitApplied ?? 100)
       ) {
-        const row = reconcileSessionChangedRow(undefined, change.snapshot, {
+        const row = reconcileParsedSessionChangedRow(undefined, snapshot, {
           archivedFilter: "all",
           admitSnapshot: true,
         }).admittedRow;
@@ -164,8 +170,8 @@ export function reconcileCurrentWork(
     if (isOlderCurrentWorkChange(change, row)) {
       continue;
     }
-    if (change.snapshot) {
-      const reduced = reconcileSessionChangedRow(row, change.snapshot, { archivedFilter: "all" });
+    if (snapshot) {
+      const reduced = reconcileParsedSessionChangedRow(row, snapshot, { archivedFilter: "all" });
       if (reduced.admittedRow) {
         state.row = reduced.admittedRow;
         state.requiresRefresh = false;

@@ -1793,6 +1793,10 @@ try {
       const responseTasks = summarizeResponseTasks(liveTrace);
       live = {
         ...liveMetrics,
+        // Serialize full owner state only after allocation sampling has stopped.
+        roster: cpuProfile
+          ? undefined
+          : await page.evaluate(() => Reflect.get(window, "__coldLoad").readSessionRoster()),
         allocation: allocationProfile
           ? {
               ...allocationProfile,

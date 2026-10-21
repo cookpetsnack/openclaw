@@ -5,6 +5,7 @@ import type { GatewaySessionRow, SessionsListResult } from "../../api/types.ts";
 import { resolveChatThinkingSelectState } from "../chat/thinking.ts";
 import { reconcileSessionChanged, reconcileSessionHistory } from "./reconcile.ts";
 import { sessionsResult } from "./session-capability.test-support.ts";
+import { prepareSessionChangedEvent } from "./session-row-reconcile.ts";
 
 const key = "agent:main:main";
 const identity = {
@@ -90,21 +91,24 @@ test("enrichment survives omitted fields but not explicit transcript clearing re
     reason: "transcript",
     session: sessionRow({ sessionId: "same-session", updatedAt: 2 }),
   };
-  const omitted = reconcileSessionChanged(initial, event).result;
+  const omitted = reconcileSessionChanged(initial, prepareSessionChangedEvent(event)).result;
   expect(omitted?.sessions[0]?.lastAssistantMessage).toEqual({
     text: "Assistant reply",
     timestamp: 1,
   });
-  const cleared = reconcileSessionChanged(omitted, {
-    ...event,
-    session: {
-      ...event.session,
-      updatedAt: 3,
-      derivedTitle: null,
-      lastMessagePreview: null,
-      lastAssistantMessage: null,
-    },
-  }).result;
+  const cleared = reconcileSessionChanged(
+    omitted,
+    prepareSessionChangedEvent({
+      ...event,
+      session: {
+        ...event.session,
+        updatedAt: 3,
+        derivedTitle: null,
+        lastMessagePreview: null,
+        lastAssistantMessage: null,
+      },
+    }),
+  ).result;
   expect(cleared?.sessions[0]?.derivedTitle).toBeUndefined();
   expect(cleared?.sessions[0]?.lastMessagePreview).toBeUndefined();
   expect(cleared?.sessions[0]?.lastAssistantMessage).toBeUndefined();
@@ -121,7 +125,7 @@ test("reconciling the same sessions.changed twice keeps result identity on the s
     label: "Renamed",
   };
 
-  const first = reconcileSessionChanged(result, payload);
+  const first = reconcileSessionChanged(result, prepareSessionChangedEvent(payload));
   expect(first).toMatchObject({
     applied: true,
     result: { ts: 2, sessions: [{ label: "Renamed" }] },
@@ -129,7 +133,7 @@ test("reconciling the same sessions.changed twice keeps result identity on the s
   expect(first.result).not.toBe(result);
   expect(first.result?.sessions[0]).not.toHaveProperty("catalogChanged");
 
-  const second = reconcileSessionChanged(first.result ?? null, payload);
+  const second = reconcileSessionChanged(first.result ?? null, prepareSessionChangedEvent(payload));
   expect(second.result).toBe(first.result);
 });
 
@@ -146,11 +150,14 @@ test("sessions.changed deletes every nested null tombstone, not a hand-kept list
   const tombstones = Object.fromEntries(Object.keys(fields).map((field) => [field, null]));
   const result = buildResult(sessionRow({ ...fields, modelOverrideSource: "user" } as never));
 
-  const reconciled = reconcileSessionChanged(result, {
-    sessionKey: key,
-    reason: "patch",
-    session: sessionRow({ updatedAt: 2, ...tombstones, modelOverrideSource: null }),
-  } as never);
+  const reconciled = reconcileSessionChanged(
+    result,
+    prepareSessionChangedEvent({
+      sessionKey: key,
+      reason: "patch",
+      session: sessionRow({ updatedAt: 2, ...tombstones, modelOverrideSource: null }),
+    }),
+  );
 
   expect(reconciled.applied).toBe(true);
   const row = reconciled.result?.sessions[0] as Record<string, unknown> | undefined;
@@ -168,13 +175,16 @@ test("sessions.changed preserves the owner facet when ownership is unchanged", (
   );
   result.owners = [createdActor];
 
-  const reconciled = reconcileSessionChanged(result, {
-    sessionKey: key,
-    reason: "send",
-    updatedAt: 2,
-    createdActor,
-    owner: { actor: createdActor },
-  });
+  const reconciled = reconcileSessionChanged(
+    result,
+    prepareSessionChangedEvent({
+      sessionKey: key,
+      reason: "send",
+      updatedAt: 2,
+      createdActor,
+      owner: { actor: createdActor },
+    }),
+  );
 
   expect(reconciled.result?.owners).toEqual([createdActor]);
 });
@@ -218,7 +228,7 @@ it.each(["raw global", "main delete", "main update", "explicit global"])(
               : {}),
             ...(mode === "explicit global" ? { agentId } : {}),
           };
-    const changed = reconcileSessionChanged(result, payload, {
+    const changed = reconcileSessionChanged(result, prepareSessionChangedEvent(payload), {
       resultAgentId: agentId,
       selectedGlobalAgentId: agentId,
     });
@@ -335,15 +345,18 @@ it.each([false, true])("reconciles thinking metadata (clear override: %s)", (cle
           }),
     }),
   );
-  const next = reconcileSessionChanged(result, {
-    sessionKey: key,
-    key,
-    kind: "global",
-    updatedAt: 2,
-    sessionId: "s1",
-    thinkingLevel: clear ? null : "ultra",
-    ...(clear ? {} : { agentRuntime: { id: "codex", source: "model" } }),
-  });
+  const next = reconcileSessionChanged(
+    result,
+    prepareSessionChangedEvent({
+      sessionKey: key,
+      key,
+      kind: "global",
+      updatedAt: 2,
+      sessionId: "s1",
+      thinkingLevel: clear ? null : "ultra",
+      ...(clear ? {} : { agentRuntime: { id: "codex", source: "model" } }),
+    }),
+  );
   expect(next.row?.thinkingLevel).toBe(clear ? undefined : "ultra");
   if (!clear) {
     expect(next.row?.thinkingLevels).toEqual(thinkingLevels);

@@ -4,6 +4,7 @@ import { CronJobSchema } from "../../../packages/gateway-protocol/src/schema/cro
 import { GatewaySessionRowEvents } from "../api/gateway-session-row-events.ts";
 import type { GatewaySessionRow } from "../api/types.ts";
 import { canApplySessionListSnapshot } from "../lib/sessions/session-list-query.ts";
+import { prepareSessionChangedEvent } from "../lib/sessions/session-row-reconcile.ts";
 import { createTeamScaleSidebarListOwner } from "./control-ui-sidebar-list-fixture.ts";
 import { createControlUiTeamScaleFixture } from "./control-ui-team-scale-fixture.ts";
 
@@ -58,9 +59,13 @@ describe("Team-scale Gateway fixture", () => {
       ...childQuery,
       rowMode: "compact",
     }).result;
-    expect(canApplySessionListSnapshot(children, fixture.liveEvents[0]!.payload, childQuery)).toBe(
-      true,
-    );
+    expect(
+      canApplySessionListSnapshot(
+        children,
+        prepareSessionChangedEvent(fixture.liveEvents[0]!.payload),
+        childQuery,
+      ),
+    ).toBe(true);
     const decoder = new GatewaySessionRowEvents();
     let references = 0;
     for (const event of fixture.liveEvents) {

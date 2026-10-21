@@ -409,7 +409,7 @@ export class SubagentsPanelData {
       return;
     }
     if (event.event === "sessions.changed") {
-      const info = parseSessionChangedEvent(event.payload)?.[0];
+      const info = parseSessionChangedEvent(event.payload)?.info;
       if (info && ["reset", "rewind", "branch-switch", "compact"].includes(info.reason ?? "")) {
         const row = this.sessions.find((candidate) =>
           areUiSessionKeysEquivalent(candidate.key, info.key),

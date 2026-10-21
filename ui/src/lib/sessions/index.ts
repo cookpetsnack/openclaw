@@ -30,7 +30,7 @@ import { createSessionPermissionProjection } from "./session-permission-projecti
 import { createSessionReconciliation } from "./session-reconciliation.ts";
 import { sessionRetryDelayMs } from "./session-retry.ts";
 import { createSessionRosterRefresh } from "./session-roster-refresh.ts";
-import { sanitizeSessionRow } from "./session-row-reconcile.ts";
+import { prepareSessionChangedEvent, sanitizeSessionRow } from "./session-row-reconcile.ts";
 import type { SessionRunTerminal } from "./session-run-terminal.ts";
 import { createSessionScopedOperations } from "./session-scoped-operations.ts";
 import { createSessionThinkingClaims } from "./session-thinking-claims.ts";
@@ -555,22 +555,18 @@ export function createSessionCapability(
     if (event.event !== "sessions.changed" && event.event !== "session.message") {
       return;
     }
-    roster.observations.descriptions.invalidateEvent(event.payload);
-    const payload = event.payload as {
-      agentId?: unknown;
-      reason?: unknown;
-      session?: unknown;
-    } | null;
+    const prepared = prepareSessionChangedEvent(event.payload);
+    roster.observations.descriptions.invalidateEvent(prepared);
+    const payload = prepared.event;
     // Recaps are opt-in Activity data; shared session queries never include them.
     if (event.event === "sessions.changed" && payload?.reason === "activity-summary") {
-      roster.captureEvent(event.payload).deliver(event);
+      roster.captureEvent(prepared).deliver(event);
       return;
     }
-    const canApplySnapshot = roster.canApplyPrimarySnapshot(event.payload);
-    const eventObservation = roster.captureEvent(event.payload);
+    const eventObservation = roster.captureEvent(prepared);
     const swarmChanged = swarmActivity.observe(event.payload);
     const { eventInfo, reconciled, claimChanged, notifyManaged, notifyEvent } =
-      reconcileChangedEvent(event.payload, eventObservation, {
+      reconcileChangedEvent(eventObservation, {
         resultAgentId: state.agentId,
         archivedFilter: roster.lastOptions().archivedFilter,
       });
@@ -582,7 +578,7 @@ export function createSessionCapability(
     const runEnded =
       hasActiveRun === false || (status !== null && status !== undefined && status !== "running");
     const isTerminalMessage = event.event === "session.message" && runEnded;
-    const primarySnapshotApplied = reconciled.applied && canApplySnapshot;
+    const primarySnapshotApplied = reconciled.applied && eventObservation.canApplyPrimarySnapshot;
     if (
       claimChanged ||
       swarmChanged ||

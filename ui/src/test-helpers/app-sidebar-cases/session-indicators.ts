@@ -3,6 +3,7 @@ import type { GatewayBrowserClient } from "../../api/gateway.ts";
 import type { ApplicationGatewaySnapshot } from "../../app/context.ts";
 import { SESSION_PULL_REQUESTS_SUBSCRIBE_METHOD } from "../../lib/session-pull-requests.ts";
 import { reconcileSessionChanged } from "../../lib/sessions/reconcile.ts";
+import { prepareSessionChangedEvent } from "../../lib/sessions/session-row-reconcile.ts";
 import { createGatewayHarness, createSessionsHarness, mountSidebar } from "../app-sidebar.ts";
 import { settleLitElement } from "../lit-settle.ts";
 import { waitForFast } from "../wait-for.ts";
@@ -23,19 +24,25 @@ describe("AppSidebar session indicators", () => {
     const row = () => sidebar.querySelector<HTMLElement>(`[data-session-key="${key}"]`);
     expect(row()?.classList.contains("sidebar-recent-session--colored")).toBe(false);
     sessions.publish({
-      result: reconcileSessionChanged(sessions.sessions.state.result, {
-        sessionKey: key,
-        color: "purple",
-      }).result,
+      result: reconcileSessionChanged(
+        sessions.sessions.state.result,
+        prepareSessionChangedEvent({
+          sessionKey: key,
+          color: "purple",
+        }),
+      ).result,
     });
     await settleLitElement(sidebar);
     expect(row()?.classList.contains("sidebar-recent-session--colored")).toBe(true);
     expect(row()?.style.getPropertyValue("--session-color")).toBe("var(--session-color-purple)");
     sessions.publish({
-      result: reconcileSessionChanged(sessions.sessions.state.result, {
-        sessionKey: key,
-        color: null,
-      }).result,
+      result: reconcileSessionChanged(
+        sessions.sessions.state.result,
+        prepareSessionChangedEvent({
+          sessionKey: key,
+          color: null,
+        }),
+      ).result,
     });
     await settleLitElement(sidebar);
     expect(row()?.classList.contains("sidebar-recent-session--colored")).toBe(false);
@@ -79,10 +86,13 @@ describe("AppSidebar session indicators", () => {
     expect(svgRow()?.querySelector(".session-glyph__emoji")).toBeNull();
 
     sessions.publish({
-      result: reconcileSessionChanged(sessions.sessions.state.result, {
-        sessionKey: svgKey,
-        icon: null,
-      }).result,
+      result: reconcileSessionChanged(
+        sessions.sessions.state.result,
+        prepareSessionChangedEvent({
+          sessionKey: svgKey,
+          icon: null,
+        }),
+      ).result,
     });
     await settleLitElement(sidebar);
     expect(svgRow()?.querySelector(".session-glyph__icon")).toBeNull();
@@ -221,10 +231,13 @@ describe("AppSidebar session indicators", () => {
     // A restored/replaced backing image arrives as a new route revision; the
     // mounted row must fetch the new URL instead of reusing the sticky 404.
     sessions.publish({
-      result: reconcileSessionChanged(sessions.sessions.state.result, {
-        sessionKey: avatarKey,
-        channelAvatarUrl: restoredUrl,
-      }).result,
+      result: reconcileSessionChanged(
+        sessions.sessions.state.result,
+        prepareSessionChangedEvent({
+          sessionKey: avatarKey,
+          channelAvatarUrl: restoredUrl,
+        }),
+      ).result,
     });
     await sidebar.updateComplete;
 

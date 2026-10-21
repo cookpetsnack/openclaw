@@ -11,24 +11,21 @@ import {
   isPersistedSessionRow,
   isSessionRowOutsideResultScope,
   matchesExistingSession,
-  parseSessionChangedEvent,
   preserveRosterPresentationMetadata,
   reconcileParsedSessionChangedRow,
   reconcileSessionRow,
-  sessionChangedSnapshots,
   type SessionChangedEventInfo,
   type SessionChangedRowProjection,
   type SessionChangedRowResult,
   type SessionReconcileOptions,
   type SessionRowObservation,
-  type ParsedSessionChangedEvent,
+  type PreparedSessionChangedEvent,
 } from "./session-row-reconcile.ts";
 import { preserveOmittedThinkingMetadata } from "./session-thinking-metadata.ts";
 
 export {
   preserveRosterPresentationMetadata,
   readSessionChangedEvent,
-  reconcileSessionChangedRow,
   reconcileSessionRow,
 } from "./session-row-reconcile.ts";
 export type { SessionReconcileOptions, SessionRowObservation } from "./session-row-reconcile.ts";
@@ -137,81 +134,89 @@ export function preserveCurrentSessionRow(
   return result;
 }
 
-function reconcileSessionChangedSnapshot(
-  result: SessionsListResult | null,
-  parsed: ParsedSessionChangedEvent | null,
-  options: SessionReconcileOptions = {},
-  project?: SessionChangedRowProjection,
-): SessionChangedResult {
-  if (!parsed) {
-    return { applied: false, result };
-  }
-  const [info] = parsed;
-  const selectedGlobalAgentId = info?.agentId ?? options.selectedGlobalAgentId ?? null;
-  const existing = info
-    ? result?.sessions.find((candidate) =>
-        matchesExistingSession(candidate, info.key, selectedGlobalAgentId),
-      )
-    : undefined;
-  const { row, admittedRow, reconciled, eventTs, ownershipChanged, disposition, ...eventResult } =
-    reconcileParsedSessionChangedRow(existing, parsed, options, project);
-  if (disposition === "outside-scope") {
-    // A foreign row cannot advance this query's clock or invalidate its owner facet.
-    return { ...eventResult, row: existing, result };
-  }
-  if (eventResult.deletedKey) {
-    if (!result || !existing) {
-      return { ...eventResult, result };
-    }
-    const sessions = result.sessions.filter((candidate) => candidate !== existing);
-    return { ...eventResult, result: { ...result, count: sessions.length, sessions } };
-  }
-  if (!reconciled) {
-    // With no roster, ordinary event fields never establish list admission.
-    return !result && eventResult.applied ? { applied: false, result } : { ...eventResult, result };
-  }
-  if (!result || !existing) {
-    return { applied: false, result };
-  }
-  const next = row === existing ? result : replaceSessionResultRow(result, existing.key, row);
-  const timestamped = eventTs !== undefined && eventTs > next.ts ? { ...next, ts: eventTs } : next;
-  // Facets describe the whole query, so the list adapter owns their invalidation.
-  const published = ownershipChanged ? { ...timestamped, owners: undefined } : timestamped;
-  return { ...eventResult, row, admittedRow, result: published };
-}
-
 export function reconcileSessionChanged(
   result: SessionsListResult | null,
-  payload: unknown,
+  prepared: PreparedSessionChangedEvent,
   options: SessionReconcileOptions = {},
   project?: SessionChangedRowProjection,
   accepts: (info: SessionChangedEventInfo) => boolean = () => true,
+  compare = compareSessionRowsByUpdatedAt,
 ): SessionChangedResult {
-  let nextResult = result;
-  let primary: SessionChangedResult | undefined;
+  let sessions = result?.sessions;
+  let ts = result?.ts ?? 0;
+  let owners = result?.owners;
+  let orderChanged = false;
+  let primary: Omit<SessionChangedResult, "result"> | undefined;
   const admittedRows: GatewaySessionRow[] = [];
-  for (const snapshot of sessionChangedSnapshots(payload)) {
-    const parsed = parseSessionChangedEvent(snapshot);
-    const info = parsed?.[0];
+  for (const parsed of prepared.snapshots) {
+    if (!parsed) {
+      primary ??= { applied: false };
+      continue;
+    }
+    const { info } = parsed;
+    const existing = sessions?.find((candidate) =>
+      matchesExistingSession(
+        candidate,
+        info.key,
+        info.agentId ?? options.selectedGlobalAgentId ?? null,
+      ),
+    );
     if (
-      info &&
-      (!accepts(info) ||
-        (snapshot !== payload &&
-          nextResult?.sessions.some(
-            (row) =>
-              matchesExistingSession(row, info.key, info.agentId) &&
-              row.sessionId !== info.sessionId,
-          )))
+      !accepts(info) ||
+      (parsed !== prepared.snapshots[0] && existing && existing.sessionId !== info.sessionId)
     ) {
       continue;
     }
-    const changed = reconcileSessionChangedSnapshot(nextResult, parsed, options, project);
-    primary ??= changed;
-    nextResult = changed.result;
-    if (changed.admittedRow) {
-      admittedRows.push(changed.admittedRow);
+    const { row, admittedRow, reconciled, eventTs, ownershipChanged, disposition, ...eventResult } =
+      reconcileParsedSessionChangedRow(existing, parsed, options, project);
+    const { deletedKey } = eventResult;
+    if (disposition === "outside-scope") {
+      primary ??= { ...eventResult, row: existing };
+      continue;
+    }
+    if (deletedKey) {
+      primary ??= eventResult;
+    } else if (!reconciled) {
+      primary ??= !result && eventResult.applied ? { applied: false } : eventResult;
+      continue;
+    } else {
+      if (!result || !existing) {
+        primary ??= { applied: false };
+        continue;
+      }
+      primary ??= { ...eventResult, row, admittedRow };
+      if (admittedRow) {
+        admittedRows.push(admittedRow);
+      }
+      if (eventTs !== undefined) {
+        ts = Math.max(ts, eventTs);
+      }
+      if (ownershipChanged) {
+        owners = undefined;
+      }
+    }
+    if (sessions && existing && (deletedKey || row !== existing)) {
+      // One event owns one working array; ancestor rows never publish intermediate sorts.
+      if (sessions === result?.sessions) {
+        sessions = sessions.slice();
+      }
+      const index = sessions.indexOf(existing);
+      if (row && !deletedKey) {
+        sessions[index] = row;
+        orderChanged = true;
+      } else {
+        sessions.splice(index, 1);
+      }
     }
   }
+  // Authoritative owner-first windows need not arrive in global recency order.
+  if (orderChanged) {
+    sessions?.sort(compare);
+  }
+  const nextResult =
+    result && (sessions !== result.sessions || ts !== result.ts || owners !== result.owners)
+      ? { ...result, sessions: sessions!, count: sessions!.length, ts, owners }
+      : result;
   return {
     ...(primary ?? { applied: false }),
     ...(admittedRows.length ? { applied: true, admittedRows } : {}),
