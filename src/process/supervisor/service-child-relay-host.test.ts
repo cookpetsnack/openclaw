@@ -790,6 +790,34 @@ it.each([
   },
 );
 
+it("retains the cleanup deadline error when cancellation output already completed", async () => {
+  const { adapter, emit, endOutput } = await createRelay("darwin");
+  vi.spyOn(performance, "now").mockReturnValue(3192.0055);
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+  const result = adapter.wait();
+  const extinction = adapter.waitForExtinction();
+  const outcomes = Promise.allSettled([result, extinction]);
+  adapter.kill("SIGKILL");
+  emit({ type: "root-result", code: 23, signal: null });
+  endOutput();
+  await nextTurn();
+
+  await vi.advanceTimersByTimeAsync(5_000);
+  const [resultOutcome, extinctionOutcome] = await outcomes;
+  expect(resultOutcome).toMatchObject({
+    status: "rejected",
+    reason: { message: expect.stringContaining("hard deadline") },
+  });
+  expect(
+    resultOutcome.status === "rejected" &&
+      resultOutcome.reason instanceof ProcessOutputIncompleteError,
+  ).toBe(false);
+  expect(extinctionOutcome).toMatchObject({
+    status: "rejected",
+    reason: { message: expect.stringContaining("hard deadline") },
+  });
+});
+
 it.each([
   { clockJump: -60_000, shutdown: false },
   { clockJump: 60_000, shutdown: true },

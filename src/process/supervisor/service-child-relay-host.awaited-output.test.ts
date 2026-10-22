@@ -295,6 +295,43 @@ it("joins native cleanup with final output before reporting no-loss settlement",
   await expect(f.closeScope()).resolves.toBeUndefined();
 });
 
+it("preserves exit code 23 through the supervisor when relay output misses the deadline", async () => {
+  vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
+  const f = await startSupervisedRelay();
+  const run = await f.ready();
+  f.child.stdout?.emit("data", Buffer.from("retained output"));
+  f.emit({ type: "root-result", code: 23, signal: null });
+  const result = run.wait();
+  const observed = result.catch((error: unknown) => error);
+  f.emit({ type: "closing", reason: "lineage-closed" });
+  await nextTurn();
+  f.lineage.end();
+  f.control.destroy();
+  f.disconnectMock();
+  f.emitExit(0);
+  const extinction = run.waitForExtinction?.();
+  void extinction?.catch(() => undefined);
+  await nextTurn();
+
+  try {
+    await vi.advanceTimersByTimeAsync(5_000);
+    const error = await observed;
+    expect(error).toMatchObject({
+      name: "ProcessOutputIncompleteError",
+      outputComplete: false,
+      result: { code: 23, signal: null },
+      cause: { message: expect.stringContaining("hard deadline") },
+    });
+    expect(error).toBeInstanceOf(ProcessOutputIncompleteError);
+  } finally {
+    f.endOutput();
+    vi.useRealTimers();
+    await extinction?.catch(() => undefined);
+    await f.closeScope().catch(() => undefined);
+    await f.supervisor.shutdown().catch(() => undefined);
+  }
+});
+
 it("counts raw-only construction activity without renewing the original overall deadline", async () => {
   vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "performance"] });
   try {

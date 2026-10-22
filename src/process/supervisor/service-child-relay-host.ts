@@ -30,6 +30,7 @@ import {
 } from "./service-child-relay-preparation.js";
 import {
   createServiceChildRelayRetirement,
+  destroyServiceChildRelayChannels,
   stopServiceChildOwner,
 } from "./service-child-relay-retirement.js";
 import type { AwaitedStdoutConsumer, ProcessAdapterStartup } from "./types.js";
@@ -232,21 +233,16 @@ export async function createServiceChildRelayAdapter(
         ),
       },
     );
-    // Preserve an observed terminal result as diagnostic data, but never present
-    // output abandoned at the hard deadline as a complete successful wait.
-    resultError ??= rootResult ? new ProcessOutputIncompleteError(rootResult, error) : error;
+    const lostOutput = !stdoutRelay.ended || !stderrRelay.ended;
+    resultError ??=
+      rootResult && lostOutput ? new ProcessOutputIncompleteError(rootResult, error) : error;
     startup.reject(error);
     resultCompletion.reject(resultError);
     cleanup.completion.reject(error);
     try {
       loseIdentity(error.message);
     } finally {
-      control?.destroy();
-      if (!params.ownedWorker) {
-        lineage?.destroy();
-      }
-      child.stdout?.destroy();
-      child.stderr?.destroy();
+      destroyServiceChildRelayChannels(child, control, params.ownedWorker ? null : lineage);
     }
   };
   const cleanupDeadline = createServiceChildCleanupDeadline({
